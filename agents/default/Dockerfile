@@ -11,5 +11,6 @@ COPY . /opt/backup-controller/scripts
 
 ENV BC_ROOT_DIR='/opt/backup-controller'
 ENV BC_SCHEDULE="0 0 * * *"
+ENV BC_RETENTION_DAYS="7"
 
 ENTRYPOINT ["/opt/backup-controller/scripts/entrypoint.sh"]
