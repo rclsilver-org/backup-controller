@@ -1,0 +1,55 @@
+volumes:
+  postgresql:
+
+services:
+  postgresql:
+    image: docker.io/bitnami/postgresql:14.2.0-debian-10-r14
+    volumes:
+      - postgresql:/bitnami/postgresql
+    environment:
+      POSTGRES_USER: test
+      POSTGRES_PASSWORD: test1234
+      POSTGRES_DATABASE: test-db
+      POSTGRES_POSTGRES_PASSWORD: root
+      POSTGRESQL_VOLUME_DIR: /bitnami/postgresql
+
+  default-agent:
+    image: backup-controller-agent-default
+    build:
+      context: ../default
+    environment:
+      # common
+      BC_SCHEDULE: '* * * * *'
+      BC_RETENTION_DAYS: '3'
+
+      # restic
+      RESTIC_HOST: 'default-agent'
+      RESTIC_REPOSITORY: /srv/restic
+      RESTIC_PASSWORD: my-secret-restic-password
+
+      # tests
+      BC_CMD: 'restic backup /root'
+
+  postgresql-agent:
+    depends_on:
+      - postgresql
+    image: backup-controller-agent-postgresql
+    build:
+      context: ../postgresql
+    volumes:
+      - postgresql:/bitnami/postgresql
+    environment:
+      # common
+      BC_SCHEDULE: '* * * * *'
+      BC_RETENTION_DAYS: '3'
+
+      # postgresql
+      PGHOST: postgresql
+      PGUSER: postgres
+      PGPASSWORD: root
+      PGDATA: /bitnami/postgresql/data
+
+      # restic
+      RESTIC_HOST: postgresql-agent
+      RESTIC_REPOSITORY: /srv/restic
+      RESTIC_PASSWORD: my-secret-restic-password
