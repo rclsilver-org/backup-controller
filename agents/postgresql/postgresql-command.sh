@@ -1,6 +1,7 @@
 #!/bin/bash
 
-source /opt/backup-controller/scripts/common.sh
+source ${BC_ROOT_DIR}/scripts/lib/common.sh
+source ${BC_ENV}
 
 log "Starting a PostgreSQL backup process."
 
