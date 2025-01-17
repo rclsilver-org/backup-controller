@@ -16,6 +16,9 @@ jobs:
       version: ${{ steps.version.outputs.value }}
 
     steps:
+      - run: |
+          exit 1
+
       - name: Checkout code
         uses: actions/checkout@v4
 
