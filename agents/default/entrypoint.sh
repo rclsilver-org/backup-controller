@@ -2,7 +2,11 @@
 
 set -e
 
-source ${BC_ROOT_DIR}/scripts/lib/common.sh
+if [ -z "${BC_SCRIPTS_DIR}" ]; then
+  export BC_SCRIPTS_DIR="${BC_ROOT_DIR}/scripts"
+fi
+
+source ${BC_SCRIPTS_DIR}/lib/common.sh
 
 REQUIRED_VARS=("BC_CMD" "BC_SCHEDULE" "RESTIC_REPOSITORY" "RESTIC_PASSWORD")
 
