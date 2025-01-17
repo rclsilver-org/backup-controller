@@ -15,4 +15,7 @@ check_env_vars() {
 }
 
 export BC_ENV=${BC_ROOT_DIR}/scripts/env
-export BC_OUTPUTS_DIR=${BC_ROOT_DIR}/scripts/outputs
+
+if [ -z "${BC_OUTPUTS_DIR}" ]; then
+  export BC_OUTPUTS_DIR=${BC_SCRIPTS_DIR}/outputs
+fi

@@ -2,8 +2,15 @@
 
 set -e
 
-source ${BC_ROOT_DIR}/scripts/lib/common.sh
-source ${BC_ENV}
+if [ -z "${BC_SCRIPTS_DIR}" ]; then
+  export BC_SCRIPTS_DIR="${BC_ROOT_DIR}/scripts"
+fi
+
+source ${BC_SCRIPTS_DIR}/lib/common.sh
+
+if [ -f "${BC_ENV}" ]; then
+  source ${BC_ENV}
+fi
 
 START_TIME=$(date +%s)
 
