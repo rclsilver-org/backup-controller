@@ -20,7 +20,6 @@ log "Starting the backup process."
 if [ ! -z "${BC_OUTPUT_MODULE}" ]; then
   if [ ! -f "${BC_OUTPUTS_DIR}/${BC_OUTPUT_MODULE}.sh" ]; then
     log "Output module '${BC_OUTPUT_MODULE}' not found!"
-    output_set_error "unknown '${BC_OUTPUT_MODULE}' output module"
     exit 1
   fi
   source "${BC_OUTPUTS_DIR}/${BC_OUTPUT_MODULE}.sh"
