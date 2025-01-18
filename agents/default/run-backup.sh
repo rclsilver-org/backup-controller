@@ -97,5 +97,5 @@ if [ ${HOURS} -gt 0 ]; then
   HUMAN_DURATION="${HOURS}h ${HUMAN_DURATION}"
 fi
 
-log "Backup process completed successfully."
-output_set_success "done in ${HUMAN_DURATION}"
+log "Backup process completed successfully in ${HUMAN_DURATION}."
+output_set_success "Backup process completed successfully in ${HUMAN_DURATION} ($(date '%Y-%m-%d %H:%M:%S'))"
