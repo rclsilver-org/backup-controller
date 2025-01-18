@@ -12,8 +12,21 @@ fi
 
 log "Starting a PostgreSQL backup process."
 
+# Retrieve the PostgreSQL server version to determine which backup functions to use
+PG_VERSION=$(psql -t -c "SHOW server_version;" | cut -d '.' -f1 | tr -d ' ')
+
+log "Detected PostgreSQL version: ${PG_VERSION}"
+
+if [ "${PG_VERSION}" -ge 15 ]; then
+  START_BACKUP_FUNCTION="pg_backup_start"
+  STOP_BACKUP_FUNCTION="pg_backup_stop"
+else
+  START_BACKUP_FUNCTION="pg_start_backup"
+  STOP_BACKUP_FUNCTION="pg_stop_backup"
+fi
+
 # Attempt to start PostgreSQL backup
-if ! psql -c "SELECT pg_start_backup('$(date +%Y-%m-%d)')"; then
+if ! psql -c "SELECT ${START_BACKUP_FUNCTION}('$(date +%Y-%m-%d)')"; then
   log "ERROR: Failed to initiate PostgreSQL backup. Check the database logs for more details."
   exit 1
 fi
@@ -23,13 +36,13 @@ log "PostgreSQL backup mode enabled."
 log "Starting Restic backup of the directory: ${PGDATA}."
 if ! restic backup "${PGDATA}"; then
   log "ERROR: Restic backup failed. Ensure that Restic is correctly configured and accessible."
-  psql -c "SELECT pg_stop_backup()" >/dev/null 2>&1 || log "WARNING: Failed to exit PostgreSQL backup mode after Restic error."
+  psql -c "SELECT ${STOP_BACKUP_FUNCTION}()" >/dev/null 2>&1 || log "WARNING: Failed to exit PostgreSQL backup mode after Restic error."
   exit 1
 fi
 log "Restic backup completed successfully."
 
 # Attempt to stop PostgreSQL backup
-if ! psql -c "SELECT pg_stop_backup()"; then
+if ! psql -c "SELECT ${STOP_BACKUP_FUNCTION}()"; then
   log "ERROR: Failed to disable PostgreSQL backup mode. The database may remain in backup mode."
   exit 1
 fi
