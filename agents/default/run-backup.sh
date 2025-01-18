@@ -26,7 +26,6 @@ if [ ! -z "${BC_OUTPUT_MODULE}" ]; then
 
   if ! output_init; then
     log "ERROR: Failed to initialize the '${BC_OUTPUT_MODULE}' output module. Please check your configuration."
-    output_set_error "failed to initialize the '${BC_OUTPUT_MODULE}' output module"
     exit 1
   fi
   log "Output module '${BC_OUTPUT_MODULE}' initialized successfully."
@@ -43,7 +42,7 @@ else
     log "Restic repository initialized successfully."
   else
     log "ERROR: Failed to initialize Restic repository. Please check your configuration."
-    output_set_error "failed to initialize the Restic repository"
+    output_set_error "restic repository initialization failed at $(date '+%Y-%m-%d %H:%M:%S')"
     exit 1
   fi
 fi
@@ -54,7 +53,7 @@ if ${BC_CMD}; then
   log "Backup command executed successfully."
 else
   log "ERROR: Backup command failed. Please check the logs and configuration."
-  output_set_error "backup command failed"
+  output_set_error "backup command execution failed at $(date '+%Y-%m-%d %H:%M:%S')"
   exit 1
 fi
 
@@ -66,7 +65,7 @@ if [ ! -z "${BACKUP_RETENTION_DAYS}" ] && [ "${BACKUP_RETENTION_DAYS}" -gt 0 ]; 
     log "Older snapshots have been successfully pruned based on the retention policy."
   else
     log "ERROR: Failed to prune older snapshots. Please check the Restic logs for details."
-    output_set_error "failed to prune older snapshots"
+    output_set_error "snapshot pruning failed at $(date '+%Y-%m-%d %H:%M:%S')"
     exit 1
   fi
 else
@@ -78,10 +77,11 @@ if restic check; then
   log "Repository integrity check completed successfully. No errors found."
 else
   log "ERROR: Repository integrity check failed. Please investigate the issue."
-  output_set_error "restic repository integrity check failed"
+  output_set_error "restic repository integrity check failed at $(date '+%Y-%m-%d %H:%M:%S')"
   exit 1
 fi
 
+#  Send the final status to the output module
 END_TIME=$(date +%s)
 TOTAL_DURATION=$((END_TIME - START_TIME))
 HOURS=$((TOTAL_DURATION / 3600))
@@ -97,5 +97,6 @@ if [ ${HOURS} -gt 0 ]; then
   HUMAN_DURATION="${HOURS}h ${HUMAN_DURATION}"
 fi
 
+output_set_success "backup process completed successfully in ${HUMAN_DURATION} at $(date '+%Y-%m-%d %H:%M:%S')"
+
 log "Backup process completed successfully in ${HUMAN_DURATION}."
-output_set_success "Backup process completed successfully in ${HUMAN_DURATION} ($(date '%Y-%m-%d %H:%M:%S'))"
