@@ -14,7 +14,7 @@ services:
       POSTGRESQL_VOLUME_DIR: /bitnami/postgresql
 
   default-agent:
-    image: backup-controller-agent-default
+    image: ghcr.io/rclsilver-org/backup-controller-agent-default
     build:
       context: ../default
     environment:
@@ -33,9 +33,10 @@ services:
   postgresql-agent:
     depends_on:
       - postgresql
-    image: backup-controller-agent-postgresql
+    image: ghcr.io/rclsilver-org/backup-controller-agent-postgresql
     build:
-      context: ../postgresql
+      context: ../..
+      dockerfile: agents/postgresql/Dockerfile
     volumes:
       - postgresql:/bitnami/postgresql
     environment:

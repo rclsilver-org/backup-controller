@@ -138,7 +138,7 @@ jobs:
         id: push
         uses: docker/build-push-action@v6
         with:
-          context: agents/postgresql
+          file: agents/postgresql/Dockerfile
           build-args: |
             VERSION=${{ needs.generate-version.outputs.version }}
           push: true
