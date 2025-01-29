@@ -1,0 +1,10 @@
+apiVersion: backup-controller.rclsilver-org.github.com/v1alpha1
+kind: Schedule
+metadata:
+  labels:
+    app.kubernetes.io/name: backup-controller
+    app.kubernetes.io/managed-by: kustomize
+  name: schedule-sample
+spec:
+  # daily
+  schedule: 0 * * * *

@@ -1,0 +1,84 @@
+apiVersion: backup-controller.rclsilver-org.github.com/v1alpha1
+kind: Policy
+metadata:
+  labels:
+    app.kubernetes.io/name: backup-controller
+    app.kubernetes.io/managed-by: kustomize
+  name: policy-sample
+spec:
+  image:
+    name: ghcr.io/rclsilver-org/backup-controller-agent-postgresql
+    tag: latest
+
+  copyEnv:
+    - variable: PGDATA
+      container: postgresql
+
+    - variable: POSTGRES_PASSWORD
+      container: postgresql
+      newName: PGPASSWORD
+
+  copyVolumeMounts:
+    - mountPath: /bitnami/postgresql
+      container: postgresql
+
+  environment:
+    - name: TZDATA
+      value: Europe/Paris
+
+    - name: PGHOST
+      value: localhost
+
+    - name: PGUSER
+      value: postgres
+
+    - name: RESTIC_HOST
+      value: '{{ (index .pod.metadata.ownerReferences 0).name }}'
+
+    - name: RESTIC_REPOSITORY
+      valueFrom:
+        secretKeyRef:
+          key: restic-repository
+          name: '{{ (index .pod.metadata.ownerReferences 0).name }}-restic'
+
+    - name: RESTIC_PASSWORD
+      valueFrom:
+        secretKeyRef:
+          key: restic-password
+          name: '{{ (index .pod.metadata.ownerReferences 0).name }}-restic'
+
+    - name: AWS_ACCESS_KEY
+      valueFrom:
+        secretKeyRef:
+          key: s3-access-key
+          name: '{{ (index .pod.metadata.ownerReferences 0).name }}-restic'
+
+    - name: AWS_SECRET_KEY
+      valueFrom:
+        secretKeyRef:
+          key: s3-secret-key
+          name: '{{ (index .pod.metadata.ownerReferences 0).name }}-restic'
+
+    - name: BC_CMD
+      value: restic backup /bitnami/postgresql
+
+    - name: BC_OUTPUT_MODULE
+      value: nagios
+
+    - name: BC_OUTPUT_NAGIOS_NSCA_HOST
+      valueFrom:
+        secretKeyRef:
+          key: nsca-host
+          name: '{{ (index .pod.metadata.ownerReferences 0).name }}-restic'
+
+    - name: BC_OUTPUT_NAGIOS_HOST
+      valueFrom:
+        secretKeyRef:
+          key: nagios-host
+          name: '{{ (index .pod.metadata.ownerReferences 0).name }}-restic'
+
+    - name: BC_OUTPUT_NAGIOS_SERVICE
+      valueFrom:
+        secretKeyRef:
+          key: nagios-service
+          name: '{{ (index .pod.metadata.ownerReferences 0).name }}-restic'

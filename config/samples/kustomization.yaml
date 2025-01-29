@@ -1,0 +1,5 @@
+## Append samples of your project ##
+resources:
+- v1alpha1_policy.yaml
+- v1alpha1_schedule.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

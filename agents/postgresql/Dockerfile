@@ -1,5 +1,5 @@
 ARG VERSION=latest
-ARG GO_VERSION=1.21
+ARG GO_VERSION=1.23
 
 FROM golang:${GO_VERSION} AS build-go
 

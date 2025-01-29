@@ -52,11 +52,14 @@ func main() {
 	logger.Debug("starting the PostgreSQL backup process", "server", pghost, "user", pguser)
 
 	// Connect to PostgreSQL
-	db, err := sql.Open("postgres", fmt.Sprintf("host=%s port=5432 user=%s password=%s sslmode=disable", pghost, pguser, pgpassword))
+	conStr := fmt.Sprintf("host=%s port=5432 user=%s password=%s sslmode=disable", pghost, pguser, pgpassword)
+	db, err := sql.Open("postgres", conStr)
 	if err != nil {
 		logger.Error("failed to connect to the PostgreSQL server", "error", err)
 	}
-	defer db.Close()
+	defer func() {
+		_ = db.Close()
+	}()
 	logger.Debug("connected to the PostgreSQL server", "server", pghost, "user", pguser)
 
 	// Determine the PostgreSQL version

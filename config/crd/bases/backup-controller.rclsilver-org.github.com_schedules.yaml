@@ -1,0 +1,65 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.17.1
+  name: schedules.backup-controller.rclsilver-org.github.com
+spec:
+  group: backup-controller.rclsilver-org.github.com
+  names:
+    kind: Schedule
+    listKind: ScheduleList
+    plural: schedules
+    singular: schedule
+  scope: Cluster
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Schedule is the Schema for the schedules API.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: ScheduleSpec defines the desired state of Schedule.
+            properties:
+              schedule:
+                description: |-
+                  Schedule specifies the backup frequency using a crontab expression.
+                  This value should follow the standard crontab format with five space-separated fields:
+                  minute (0-59), hour (0-23), day of the month (1-31), month (1-12), and day of the week (0-6, where 0 = Sunday).
+
+                  Examples:
+                    - "0 3 * * *" for a backup every day at 3 AM.
+                    - "*/15 * * * *" for a backup every 15 minutes.
+                    - "0 0 * * 0" for a backup every Sunday at midnight.
+
+                  This field is required and must be a valid crontab string.
+
+                  Docs: https://man7.org/linux/man-pages/man5/crontab.5.html
+                type: string
+            type: object
+          status:
+            description: ScheduleStatus defines the observed state of Schedule.
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

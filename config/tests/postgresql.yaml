@@ -1,0 +1,6 @@
+"primary":
+  "persistence":
+    "enabled": true
+  "podAnnotations":
+    "backup-controller.rclsilver-org.github.com/policy": "postgresql"
+    "backup-controller.rclsilver-org.github.com/schedule": "daily"
