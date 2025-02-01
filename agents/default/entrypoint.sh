@@ -8,9 +8,14 @@ fi
 
 source ${BC_SCRIPTS_DIR}/lib/common.sh
 
-REQUIRED_VARS=("BC_CMD" "BC_SCHEDULE" "RESTIC_REPOSITORY" "RESTIC_PASSWORD")
+REQUIRED_VARS=("BC_SCHEDULE" "RESTIC_REPOSITORY" "RESTIC_PASSWORD")
 
 check_env_vars "${REQUIRED_VARS[@]}"
+
+if [ -z "${BC_CMD}" ] && [ -z "${BC_BACKUP_DIR}" ]; then
+  echo "ERROR: bot BC_CMD and BC_BACKUP_DIR are not set!"
+  exit 1
+fi
 
 if [ ! -z "${TZDATA}" ]; then
   if [ ! -f /usr/share/zoneinfo/${TZDATA} ]; then

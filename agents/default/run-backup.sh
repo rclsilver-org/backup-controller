@@ -47,6 +47,11 @@ else
   fi
 fi
 
+# Compute the command if not set
+if [ -z "${BC_CMD}" ]; then
+  BC_CMD="restic backup ${BC_BACKUP_DIR}"
+fi
+
 # Execute the backup command
 log "Executing the backup command: ${BC_CMD}"
 if ${BC_CMD}; then
