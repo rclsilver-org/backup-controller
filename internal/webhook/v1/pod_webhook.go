@@ -21,6 +21,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 
 	"text/template"
 
@@ -115,6 +116,21 @@ func (d *PodCustomDefaulter) Default(ctx context.Context, obj runtime.Object) er
 		newContainer.ImagePullPolicy = corev1.PullAlways
 	} else {
 		newContainer.ImagePullPolicy = corev1.PullIfNotPresent
+	}
+
+	if policy.Spec.AutoDetectVolumeMount {
+		volumeMount, err := d.getPotentialVolumeMount(*pod)
+		if err != nil {
+			return fmt.Errorf("error while detecting volume mount: %w", err)
+		}
+
+		log.Info("detected volume mount", "path", volumeMount.MountPath)
+
+		newContainer.VolumeMounts = append(newContainer.VolumeMounts, volumeMount)
+		newContainer.Env = append(newContainer.Env, corev1.EnvVar{
+			Name:  "BC_BACKUP_DIR",
+			Value: volumeMount.MountPath,
+		})
 	}
 
 	newContainer.Env = append(newContainer.Env, policy.Spec.Environment...)
@@ -234,4 +250,70 @@ func (d *PodCustomDefaulter) buildTemplate(policy v1alpha1.Policy, pod corev1.Po
 	}
 
 	return policy, nil
+}
+
+func (d *PodCustomDefaulter) getPotentialVolumeMount(pod corev1.Pod) (corev1.VolumeMount, error) {
+	annotations := pod.GetAnnotations()
+	volumeAnnotation := annotations[constants.AutoDetectVolumeAnnotation]
+	containerAnnotation := annotations[constants.AutoDetectContainerAnnotation]
+
+	var validVolumes []string
+	for _, v := range pod.Spec.Volumes {
+		valid := false
+
+		if volumeAnnotation != "" {
+			if v.Name == volumeAnnotation {
+				valid = true
+			}
+		} else {
+			if v.HostPath != nil && v.HostPath.Path != "" {
+				valid = true
+			}
+
+			if v.PersistentVolumeClaim != nil && v.PersistentVolumeClaim.ClaimName != "" {
+				valid = true
+			}
+
+			if v.NFS != nil && v.NFS.Server != "" {
+				valid = true
+			}
+
+			if v.ISCSI != nil && v.ISCSI.IQN != "" {
+				valid = true
+			}
+
+			if v.FC != nil && v.FC.Lun != nil {
+				valid = true
+			}
+
+			if v.CSI != nil && v.CSI.Driver != "" {
+				valid = true
+			}
+		}
+
+		if valid {
+			validVolumes = append(validVolumes, v.Name)
+		}
+	}
+
+	var potentialMounts []corev1.VolumeMount
+	for _, c := range pod.Spec.Containers {
+		if containerAnnotation != "" && c.Name != containerAnnotation {
+			continue
+		}
+
+		for _, m := range c.VolumeMounts {
+			if slices.Contains(validVolumes, m.Name) {
+				potentialMounts = append(potentialMounts, m)
+			}
+		}
+	}
+
+	if len(potentialMounts) == 0 {
+		return corev1.VolumeMount{}, fmt.Errorf("no volume found")
+	} else if l := len(potentialMounts); l > 1 {
+		return corev1.VolumeMount{}, fmt.Errorf("found %d volume(s)", l)
+	}
+
+	return potentialMounts[0], nil
 }

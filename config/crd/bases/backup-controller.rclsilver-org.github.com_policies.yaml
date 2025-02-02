@@ -39,6 +39,11 @@ spec:
           spec:
             description: PolicySpec defines the desired state of Policy.
             properties:
+              autoDetectVolumeMount:
+                description: |-
+                  AutoDetectVolumeMount enables automatic detection of the volume mount to be copied.
+                  If set to true, the controller will attempt to identify and replicate the appropriate volume mount.
+                type: boolean
               copyEnv:
                 description: CopyEnv represents an instruction to copy an environment
                   variable from an other container in the same pod.
