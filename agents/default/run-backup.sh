@@ -63,10 +63,10 @@ else
 fi
 
 # Purge older snapshots if needed
-if [ ! -z "${BACKUP_RETENTION_DAYS}" ] && [ "${BACKUP_RETENTION_DAYS}" -gt 0 ]; then
-  log "Starting the cleanup of older snapshots. Retention policy: keep snapshots from the last ${BACKUP_RETENTION_DAYS} days."
+if [ ! -z "${BC_RETENTION_DAYS}" ] && [ "${BC_RETENTION_DAYS}" -gt 0 ]; then
+  log "Starting the cleanup of older snapshots. Retention policy: keep snapshots from the last ${BC_RETENTION_DAYS} days."
 
-  if restic forget -d ${BACKUP_RETENTION_DAYS} -c --prune; then
+  if restic forget -d ${BC_RETENTION_DAYS} -c --prune; then
     log "Older snapshots have been successfully pruned based on the retention policy."
   else
     log "ERROR: Failed to prune older snapshots. Please check the Restic logs for details."
