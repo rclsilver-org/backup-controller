@@ -49,8 +49,13 @@ fi
 
 # Compute the command if not set
 if [ -z "${BC_CMD}" ]; then
+  BC_LIST_FILES="/tmp/list-files.txt"
   IFS=':' read -r -a BC_PATHS <<< "$BC_BACKUP_DIR"
-  BC_CMD="restic backup ${BC_PATHS[@]@Q}"
+  > ${BC_LIST_FILES}
+  for path in "${BC_PATHS[@]}"; do
+      echo "$path" >> ${BC_LIST_FILES}
+  done
+  BC_CMD="restic backup --files-from=${BC_LIST_FILES}"
 fi
 
 # Execute the backup command
