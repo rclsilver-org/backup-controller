@@ -49,7 +49,8 @@ fi
 
 # Compute the command if not set
 if [ -z "${BC_CMD}" ]; then
-  BC_CMD="restic backup ${BC_BACKUP_DIR}"
+  IFS=':' read -r -a BC_PATHS <<< "$BC_BACKUP_DIR"
+  BC_CMD="restic backup ${BC_PATHS[@]@Q}"
 fi
 
 # Execute the backup command

@@ -82,9 +82,9 @@ type PolicySpec struct {
 	// CopyVolumeMount represents an instruction to copy a volume mount from an other container in the same pod.
 	CopyVolumeMount []CopyVolumeMount `json:"copyVolumeMounts,omitempty"`
 
-	// AutoDetectVolumeMount enables automatic detection of the volume mount to be copied.
-	// If set to true, the controller will attempt to identify and replicate the appropriate volume mount.
-	AutoDetectVolumeMount bool `json:"autoDetectVolumeMount,omitempty"`
+	// AutoDetectVolumeMounts enables automatic detection of the volume mounts to be copied.
+	// If set to true, the controller will attempt to identify and replicate the appropriate volume mounts.
+	AutoDetectVolumeMounts bool `json:"autoDetectVolumeMounts,omitempty"`
 }
 
 // PolicyStatus defines the observed state of Policy.

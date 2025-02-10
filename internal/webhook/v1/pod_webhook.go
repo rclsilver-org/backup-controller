@@ -118,18 +118,30 @@ func (d *PodCustomDefaulter) Default(ctx context.Context, obj runtime.Object) er
 		newContainer.ImagePullPolicy = corev1.PullIfNotPresent
 	}
 
-	if policy.Spec.AutoDetectVolumeMount {
-		volumeMount, err := d.getPotentialVolumeMount(*pod)
+	if policy.Spec.AutoDetectVolumeMounts {
+		mounts, err := d.getDetectedVolumeMounts(*pod)
 		if err != nil {
-			return fmt.Errorf("error while detecting volume mount: %w", err)
+			return fmt.Errorf("error while detecting volume mounts: %w", err)
 		}
 
-		log.Info("detected volume mount", "path", volumeMount.MountPath)
+		var backupDir string
+		if len(mounts) == 1 {
+			log.Info("detected volume mount", "path", mounts[0].MountPath)
+			backupDir = mounts[0].MountPath
+		} else {
+			log.Info(fmt.Sprintf("detected %d volume mounts", len(mounts)))
+			for i, m := range mounts {
+				if i > 0 {
+					backupDir += ":"
+				}
+				backupDir += m.MountPath
+			}
+		}
 
-		newContainer.VolumeMounts = append(newContainer.VolumeMounts, volumeMount)
+		newContainer.VolumeMounts = append(newContainer.VolumeMounts, mounts...)
 		newContainer.Env = append(newContainer.Env, corev1.EnvVar{
 			Name:  "BC_BACKUP_DIR",
-			Value: volumeMount.MountPath,
+			Value: backupDir,
 		})
 	}
 
@@ -252,7 +264,7 @@ func (d *PodCustomDefaulter) buildTemplate(policy v1alpha1.Policy, pod corev1.Po
 	return policy, nil
 }
 
-func (d *PodCustomDefaulter) getPotentialVolumeMount(pod corev1.Pod) (corev1.VolumeMount, error) {
+func (d *PodCustomDefaulter) getDetectedVolumeMounts(pod corev1.Pod) ([]corev1.VolumeMount, error) {
 	annotations := pod.GetAnnotations()
 	volumeAnnotation := annotations[constants.AutoDetectVolumeAnnotation]
 	containerAnnotation := annotations[constants.AutoDetectContainerAnnotation]
@@ -292,11 +304,13 @@ func (d *PodCustomDefaulter) getPotentialVolumeMount(pod corev1.Pod) (corev1.Vol
 		}
 
 		if valid {
-			validVolumes = append(validVolumes, v.Name)
+			if !slices.Contains(validVolumes, v.Name) {
+				validVolumes = append(validVolumes, v.Name)
+			}
 		}
 	}
 
-	var potentialMounts []corev1.VolumeMount
+	var mounts []corev1.VolumeMount
 	for _, c := range pod.Spec.Containers {
 		if containerAnnotation != "" && c.Name != containerAnnotation {
 			continue
@@ -304,16 +318,14 @@ func (d *PodCustomDefaulter) getPotentialVolumeMount(pod corev1.Pod) (corev1.Vol
 
 		for _, m := range c.VolumeMounts {
 			if slices.Contains(validVolumes, m.Name) {
-				potentialMounts = append(potentialMounts, m)
+				mounts = append(mounts, m)
 			}
 		}
 	}
 
-	if len(potentialMounts) == 0 {
-		return corev1.VolumeMount{}, fmt.Errorf("no volume found")
-	} else if l := len(potentialMounts); l > 1 {
-		return corev1.VolumeMount{}, fmt.Errorf("found %d volume(s)", l)
+	if len(mounts) == 0 {
+		return nil, fmt.Errorf("no volume found")
 	}
 
-	return potentialMounts[0], nil
+	return mounts, nil
 }
