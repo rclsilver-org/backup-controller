@@ -171,6 +171,12 @@ func (d *PodCustomDefaulter) Default(ctx context.Context, obj runtime.Object) er
 		Value: schedule.Spec.Schedule,
 	})
 
+	var zero int64 = 0
+	newContainer.SecurityContext = &corev1.SecurityContext{
+		RunAsUser:  &zero,
+		RunAsGroup: &zero,
+	}
+
 	pod.Spec.Containers = append(pod.Spec.Containers, newContainer)
 
 	if pod.Labels == nil {
