@@ -172,9 +172,11 @@ func (d *PodCustomDefaulter) Default(ctx context.Context, obj runtime.Object) er
 	})
 
 	var zero int64 = 0
+	var false bool = false
 	newContainer.SecurityContext = &corev1.SecurityContext{
-		RunAsUser:  &zero,
-		RunAsGroup: &zero,
+		RunAsUser:    &zero,
+		RunAsGroup:   &zero,
+		RunAsNonRoot: &false,
 	}
 
 	pod.Spec.Containers = append(pod.Spec.Containers, newContainer)
