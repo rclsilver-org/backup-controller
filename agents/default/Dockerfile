@@ -13,7 +13,7 @@ RUN apk add --no-cache git gcc libc-dev make && \
 FROM restic/restic:${RESTIC_VERSION} AS restic
 FROM base
 
-RUN apk add --no-cache bash curl cronie tzdata
+RUN apk add --no-cache bash curl cronie tzdata jq
 
 COPY --from=restic /usr/bin/restic /usr/bin/restic
 COPY --from=base /root/nsca/src/send_nsca /usr/local/bin/send_nsca

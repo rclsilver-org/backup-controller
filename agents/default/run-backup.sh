@@ -108,6 +108,23 @@ if [ ${HOURS} -gt 0 ]; then
   HUMAN_DURATION="${HOURS}h ${HUMAN_DURATION}"
 fi
 
+# Restic latest snapshot
+SNAPSHOT_SUMMARY=$(restic snapshots --latest 1 --json | jq -r '.[0].summary')
+
+export BACKUP_FILES_NEW=$(echo ${SNAPSHOT_SUMMARY} | jq -r '.files_new')
+export BACKUP_FILES_CHANGED=$(echo ${SNAPSHOT_SUMMARY} | jq -r '.files_changed')
+export BACKUP_FILES_UNMODIFIED=$(echo ${SNAPSHOT_SUMMARY} | jq -r '.files_unmodified')
+export BACKUP_DIRS_NEW=$(echo ${SNAPSHOT_SUMMARY} | jq -r '.dirs_new')
+export BACKUP_DIRS_CHANGED=$(echo ${SNAPSHOT_SUMMARY} | jq -r '.dirs_changed')
+export BACKUP_DIRS_UNMODIFIED=$(echo ${SNAPSHOT_SUMMARY} | jq -r '.dirs_unmodified')
+export BACKUP_DATA_BLOBS=$(echo ${SNAPSHOT_SUMMARY} | jq -r '.data_blobs')
+export BACKUP_TREE_BLOBS=$(echo ${SNAPSHOT_SUMMARY} | jq -r '.tree_blobs')
+export BACKUP_DATA_ADDED=$(echo ${SNAPSHOT_SUMMARY} | jq -r '.data_added')
+export BACKUP_DATA_ADDED_PACKED=$(echo ${SNAPSHOT_SUMMARY} | jq -r '.data_added_packed')
+export BACKUP_TOTAL_FILES=$(echo ${SNAPSHOT_SUMMARY} | jq -r '.total_files_processed')
+export BACKUP_TOTAL_BYTES=$(echo ${SNAPSHOT_SUMMARY} | jq -r '.total_bytes_processed')
+export BACKUP_DURATION=${TOTAL_DURATION}
+
 output_set_success "backup process completed successfully in ${HUMAN_DURATION} at $(date '+%Y-%m-%d %H:%M:%S')"
 
 log "Backup process completed successfully in ${HUMAN_DURATION}."
