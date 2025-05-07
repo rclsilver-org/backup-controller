@@ -19,7 +19,19 @@ function output_set_success() {
   "exit_status": 0,
   "plugin_output": "${*}",
   "performance_data": [
-    "duration=${TOTAL_DURATION}"
+    "duration=${BACKUP_DURATION}",
+    "files_new=${BACKUP_FILES_NEW}",
+    "files_changed=${BACKUP_FILES_CHANGED}",
+    "files_unmodified=${BACKUP_FILES_UNMODIFIED}",
+    "dirs_new=${BACKUP_DIRS_NEW}",
+    "dirs_changed=${BACKUP_DIRS_CHANGED}",
+    "dirs_unmodified=${BACKUP_DIRS_UNMODIFIED}",
+    "data_blobs=${BACKUP_DATA_BLOBS}",
+    "tree_blobs=${BACKUP_TREE_BLOBS}",
+    "data_added=${BACKUP_DATA_ADDED}",
+    "data_added_packed=${BACKUP_DATA_ADDED_PACKED}",
+    "total_files=${BACKUP_TOTAL_FILES}",
+    "total_bytes=${BACKUP_TOTAL_BYTES}"
   ],
   "pretty": true
 }
