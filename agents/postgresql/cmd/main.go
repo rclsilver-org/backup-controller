@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
-	"strconv"
 	"time"
 
 	_ "github.com/lib/pq"
@@ -96,20 +95,19 @@ func main() {
 	logger.Info("backup mode is now disabled")
 }
 
-// pgGetVersion fetch and return the PostgreSQL server version
+// pgGetVersion fetches and returns the PostgreSQL server version as a float (e.g. 18.1)
 func pgGetVersion(db *sql.DB) (float64, error) {
-	var version string
-	err := db.QueryRow("SHOW server_version").Scan(&version)
+	var versionNum int
+
+	err := db.QueryRow("SHOW server_version_num").Scan(&versionNum)
 	if err != nil {
 		return 0, err
 	}
 
-	result, err := strconv.ParseFloat(version, 64)
-	if err != nil {
-		return 0, fmt.Errorf("unable to parse the version string: %w", err)
-	}
+	major := versionNum / 10000
+	minor := (versionNum % 10000) / 1000
 
-	return result, nil
+	return float64(major) + float64(minor)/10, nil
 }
 
 // pgStartBackup enables the backup in PostgreSQL
