@@ -25,3 +25,11 @@ func RequiredEnvVar(variables ...string) error {
 	}
 	return nil
 }
+
+func GetEnv(name, defaultValue string) string {
+	v, ok := os.LookupEnv(name)
+	if !ok {
+		v = defaultValue
+	}
+	return v
+}
