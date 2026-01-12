@@ -7,6 +7,9 @@ const (
 	// ScheduleAnnotation is the annotation used by the user to define the schedule to use
 	ScheduleAnnotation = "backup-controller.rclsilver-org.github.com/schedule"
 
+	// FilterAnnotation is the annotation used by the user to filter the pod name
+	FilterAnnotation = "backup-controller.rclsilver-org.github.com/filter"
+
 	// AutoDetectVolumeAnnotation specify the volume name to use when auto-detect is enabled
 	AutoDetectVolumeAnnotation = "backup-controller.rclsilver-org.github.com/detect.volume"
 

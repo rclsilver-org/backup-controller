@@ -21,6 +21,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"slices"
 
 	"text/template"
@@ -81,9 +82,25 @@ func (d *PodCustomDefaulter) Default(ctx context.Context, obj runtime.Object) er
 		scheduleName = ""
 	}
 
+	filterPattern, ok := annotations[constants.FilterAnnotation]
+	if !ok {
+		filterPattern = ""
+	}
+
 	if policyName == "" || scheduleName == "" {
 		log.Info("ignoring the pod because either policy or schedule undefined")
 		return nil
+	}
+
+	if filterPattern != "" {
+		matched, err := regexp.MatchString(filterPattern, pod.Name)
+		if err != nil {
+			return fmt.Errorf("invalid filter pattern %q: %w", filterPattern, err)
+		}
+		if !matched {
+			log.Info("ignoring the pod because name does not match filter pattern", "podName", pod.Name, "filter", filterPattern)
+			return nil
+		}
 	}
 
 	sourcePolicy, err := d.getPolicy(ctx, policyName)
