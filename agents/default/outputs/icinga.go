@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 
 	"github.com/rclsilver-org/backup-controller/agents/common"
@@ -51,22 +52,32 @@ func (o *icingaOutput) Init() error {
 	o.host = common.GetEnv(BC_OUTPUT_ICINGA_HOST, "")
 	o.service = common.GetEnv(BC_OUTPUT_ICINGA_SERVICE, "")
 
+	slog.Debug("icinga output initialized",
+		"api_url", o.apiURL,
+		"host", o.host,
+		"service", o.service,
+		"username", o.apiUsername)
+
 	return nil
 }
 
 func (o *icingaOutput) SetSuccess(ctx context.Context, msg string, data map[string]any) error {
+	slog.InfoContext(ctx, "sending SUCCESS status to Icinga", "host", o.host, "service", o.service, "message", msg)
 	return o.send(ctx, 0, msg, data)
 }
 
 func (o *icingaOutput) SetWarning(ctx context.Context, err error) error {
+	slog.InfoContext(ctx, "sending WARNING status to Icinga", "host", o.host, "service", o.service, "error", err.Error())
 	return o.send(ctx, 1, err.Error(), nil)
 }
 
 func (o *icingaOutput) SetError(ctx context.Context, err error) error {
+	slog.InfoContext(ctx, "sending ERROR status to Icinga", "host", o.host, "service", o.service, "error", err.Error())
 	return o.send(ctx, 2, err.Error(), nil)
 }
 
 func (o *icingaOutput) SetUnknown(ctx context.Context, err error) error {
+	slog.InfoContext(ctx, "sending UNKNOWN status to Icinga", "host", o.host, "service", o.service, "error", err.Error())
 	return o.send(ctx, 3, err.Error(), nil)
 }
 
@@ -91,12 +102,24 @@ func (o *icingaOutput) send(ctx context.Context, exitStatus int, output string, 
 		status.PerformanceData = append(status.PerformanceData, fmt.Sprintf("%s=%v", k, v))
 	}
 
+	slog.DebugContext(ctx, "preparing to send status to icinga",
+		"host", o.host,
+		"service", o.service,
+		"exit_status", exitStatus,
+		"output", output,
+		"performance_data", performanceData)
+
 	payload, err := json.Marshal(status)
 	if err != nil {
 		return fmt.Errorf("unable to marshal the status: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("%s/v1/actions/process-check-result", o.apiURL), bytes.NewReader(payload))
+	slog.DebugContext(ctx, "status payload marshaled", "payload", string(payload))
+
+	url := fmt.Sprintf("%s/v1/actions/process-check-result", o.apiURL)
+	slog.DebugContext(ctx, "sending request to icinga", "url", url)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
 		return fmt.Errorf("unable to build the request: %w", err)
 	}
@@ -114,6 +137,7 @@ func (o *icingaOutput) send(ctx context.Context, exitStatus int, output string, 
 
 	res, err := client.Do(req)
 	if err != nil {
+		slog.DebugContext(ctx, "failed to send request to icinga", "error", err)
 		return fmt.Errorf("unable to send the status: %w", err)
 	}
 	defer func() {
@@ -122,12 +146,25 @@ func (o *icingaOutput) send(ctx context.Context, exitStatus int, output string, 
 		}
 	}()
 
+	slog.DebugContext(ctx, "received response from icinga", "status_code", res.StatusCode)
+
 	if res.StatusCode != http.StatusOK {
 		bodyBytes, readErr := io.ReadAll(res.Body)
 		if readErr != nil {
+			slog.DebugContext(ctx, "failed to read response body", "error", readErr)
 			return fmt.Errorf("unexpected status code: %d (failed to read response body: %w)", res.StatusCode, readErr)
 		}
+		slog.DebugContext(ctx, "icinga returned error", "status_code", res.StatusCode, "response", string(bodyBytes))
 		return fmt.Errorf("unexpected status code: %d, response: %s", res.StatusCode, string(bodyBytes))
+	}
+
+	bodyBytes, readErr := io.ReadAll(res.Body)
+	if readErr == nil {
+		slog.InfoContext(ctx, "status successfully sent to Icinga", "host", o.host, "service", o.service, "exit_status", exitStatus)
+		slog.DebugContext(ctx, "icinga API response", "response", string(bodyBytes))
+	} else {
+		slog.InfoContext(ctx, "status successfully sent to Icinga", "host", o.host, "service", o.service, "exit_status", exitStatus)
+		slog.DebugContext(ctx, "failed to read response body", "error", readErr)
 	}
 
 	return err
