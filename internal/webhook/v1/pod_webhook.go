@@ -189,15 +189,8 @@ func (d *PodCustomDefaulter) Default(ctx context.Context, obj runtime.Object) er
 		Value: schedule.Spec.Schedule,
 	})
 
-	if retentionDaysStr, ok := annotations[constants.RetentionDaysAnnotation]; ok {
-		retentionDays, err := strconv.Atoi(retentionDaysStr)
-		if err != nil || retentionDays <= 0 {
-			return fmt.Errorf("annotation %q must be a positive integer, got %q", constants.RetentionDaysAnnotation, retentionDaysStr)
-		}
-		newContainer.Env = append(newContainer.Env, corev1.EnvVar{
-			Name:  "BC_RETENTION_DAYS",
-			Value: retentionDaysStr,
-		})
+	if err := d.applyRetentionDays(annotations, &newContainer); err != nil {
+		return err
 	}
 
 	var zero int64 = 0
@@ -365,4 +358,23 @@ func (d *PodCustomDefaulter) getDetectedVolumeMounts(pod corev1.Pod) ([]corev1.V
 	}
 
 	return mounts, nil
+}
+
+func (d *PodCustomDefaulter) applyRetentionDays(annotations map[string]string, container *corev1.Container) error {
+	retentionDaysStr, ok := annotations[constants.RetentionDaysAnnotation]
+	if !ok {
+		return nil
+	}
+
+	retentionDays, err := strconv.Atoi(retentionDaysStr)
+	if err != nil || retentionDays <= 0 {
+		return fmt.Errorf("annotation %q must be a positive integer, got %q", constants.RetentionDaysAnnotation, retentionDaysStr)
+	}
+
+	container.Env = append(container.Env, corev1.EnvVar{
+		Name:  "BC_RETENTION_DAYS",
+		Value: retentionDaysStr,
+	})
+
+	return nil
 }
