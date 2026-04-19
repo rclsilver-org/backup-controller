@@ -97,13 +97,56 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Start watching scheduled backups dynamically
+	// Start watching scheduled backups dynamically with retry logic
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		if err := watchScheduledBackups(ctx, dynamicClient, clusterName, myNamespace); err != nil {
-			slog.ErrorContext(ctx, "error watching scheduled backups", "error", err)
+		// Retry loop with exponential backoff
+		initialBackoff := time.Second
+		backoff := initialBackoff
+		maxBackoff := 5 * time.Minute
+		hadError := false
+
+		for {
+			select {
+			case <-ctx.Done():
+				slog.DebugContext(ctx, "context cancelled, stopping retry loop")
+				return
+			default:
+			}
+
+			watchStart := time.Now()
+			if err := watchScheduledBackups(ctx, dynamicClient, clusterName, myNamespace, hadError); err != nil {
+				if ctx.Err() != nil {
+					// Context was cancelled, exit gracefully
+					return
+				}
+
+				// Reset backoff if the previous watch ran long enough to be considered stable
+				if time.Since(watchStart) > backoff {
+					backoff = initialBackoff
+				}
+
+				slog.ErrorContext(ctx, "error watching scheduled backups, retrying", "error", err, "backoff", backoff)
+				outputs.SetUnknown(ctx, fmt.Errorf("temporarily unable to watch backups: %w", err))
+				hadError = true
+
+				timer := time.NewTimer(backoff)
+				select {
+				case <-timer.C:
+					backoff *= 2
+					if backoff > maxBackoff {
+						backoff = maxBackoff
+					}
+				case <-ctx.Done():
+					timer.Stop()
+					return
+				}
+			} else {
+				// Successful completion (context cancelled), exit
+				return
+			}
 		}
 	}()
 
@@ -167,13 +210,25 @@ func getClusterName(ctx context.Context, clientset *kubernetes.Clientset, podNam
 }
 
 // watchScheduledBackups watches for ScheduledBackup resources and manages backup watchers dynamically
-func watchScheduledBackups(ctx context.Context, dynamicClient dynamic.Interface, clusterName, namespace string) error {
+func watchScheduledBackups(ctx context.Context, dynamicClient dynamic.Interface, clusterName, namespace string, recoveryFromError bool) error {
 	slog.DebugContext(ctx, "starting to watch scheduled backups", "clusterName", clusterName)
 
 	// Map to track active backup watchers: scheduledBackupName -> cancel function
 	activeWatchers := make(map[string]context.CancelFunc)
 	var watchersMutex sync.Mutex
 	var watchersWg sync.WaitGroup
+
+	// Cleanup function to stop all watchers
+	defer func() {
+		watchersMutex.Lock()
+		for sbName, cancel := range activeWatchers {
+			slog.DebugContext(ctx, "cleaning up backup watcher", "scheduledBackup", sbName)
+			cancel()
+		}
+		activeWatchers = make(map[string]context.CancelFunc)
+		watchersMutex.Unlock()
+		watchersWg.Wait()
+	}()
 
 	// Helper function to start a backup watcher
 	startBackupWatcher := func(scheduledBackupName string) {
@@ -192,9 +247,14 @@ func watchScheduledBackups(ctx context.Context, dynamicClient dynamic.Interface,
 		watchersWg.Add(1)
 		go func(sbName string) {
 			defer watchersWg.Done()
-			if err := watchBackupsForScheduledBackup(watcherCtx, dynamicClient, sbName, namespace); err != nil {
-				slog.ErrorContext(ctx, "error watching backups", "scheduledBackup", sbName, "error", err)
-			}
+			defer func() {
+				// Clean up the watcher from activeWatchers when it stops
+				watchersMutex.Lock()
+				delete(activeWatchers, sbName)
+				watchersMutex.Unlock()
+			}()
+
+			watchBackupsForScheduledBackup(watcherCtx, dynamicClient, sbName, namespace)
 			slog.DebugContext(ctx, "backup watcher stopped", "scheduledBackup", sbName)
 		}(scheduledBackupName)
 
@@ -222,6 +282,12 @@ func watchScheduledBackups(ctx context.Context, dynamicClient dynamic.Interface,
 		return fmt.Errorf("failed to list scheduled backups: %w", err)
 	}
 
+	// If we're recovering from an error, send a success status to clear the alert
+	if recoveryFromError {
+		slog.InfoContext(ctx, "connection restored after temporary failure")
+		outputs.SetSuccess(ctx, "monitoring connection restored, waiting for next backup", nil)
+	}
+
 	for _, item := range list.Items {
 		cluster, found, err := unstructured.NestedString(item.Object, "spec", "cluster", "name")
 		if err != nil || !found || cluster != clusterName {
@@ -230,87 +296,139 @@ func watchScheduledBackups(ctx context.Context, dynamicClient dynamic.Interface,
 		startBackupWatcher(item.GetName())
 	}
 
-	// Start watching from the current resource version
+	// Start watching from the current resource version with retry logic
 	resourceVersion := list.GetResourceVersion()
-	watcher, err := dynamicClient.Resource(scheduledBackupGVR).Namespace(namespace).Watch(ctx, metav1.ListOptions{
-		ResourceVersion: resourceVersion,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to watch scheduled backups: %w", err)
-	}
-	defer watcher.Stop()
 
+	// Watch loop with internal retry
 	for {
-		select {
-		case <-ctx.Done():
-			slog.DebugContext(ctx, "stopping watch for scheduled backups")
-
-			// Stop all active watchers
-			watchersMutex.Lock()
-			for sbName, cancel := range activeWatchers {
-				slog.DebugContext(ctx, "stopping backup watcher", "scheduledBackup", sbName)
-				cancel()
-			}
-			activeWatchers = make(map[string]context.CancelFunc)
-			watchersMutex.Unlock()
-
-			// Wait for all watchers to finish
-			watchersWg.Wait()
-			return nil
-
-		case event, ok := <-watcher.ResultChan():
-			if !ok {
-				// Watcher closed, need to restart
-				slog.DebugContext(ctx, "scheduled backup watcher closed, restarting")
-
-				// Stop all watchers before restarting
-				watchersMutex.Lock()
-				for _, cancel := range activeWatchers {
-					cancel()
-				}
-				activeWatchers = make(map[string]context.CancelFunc)
-				watchersMutex.Unlock()
-				watchersWg.Wait()
-
-				return watchScheduledBackups(ctx, dynamicClient, clusterName, namespace)
-			}
-
-			scheduledBackup, ok := event.Object.(*unstructured.Unstructured)
-			if !ok {
-				continue
-			}
-
-			// Check if this scheduled backup belongs to our cluster
-			cluster, found, err := unstructured.NestedString(scheduledBackup.Object, "spec", "cluster", "name")
-			if err != nil || !found || cluster != clusterName {
-				continue
-			}
-
-			scheduledBackupName := scheduledBackup.GetName()
-
-			switch event.Type {
-			case watch.Added:
-				slog.InfoContext(ctx, "new scheduled backup detected", "scheduledBackup", scheduledBackupName)
-				startBackupWatcher(scheduledBackupName)
-
-			case watch.Deleted:
-				slog.InfoContext(ctx, "scheduled backup deleted", "scheduledBackup", scheduledBackupName)
-				stopBackupWatcher(scheduledBackupName)
-
-			case watch.Modified:
-				// Check if cluster name changed
-				if cluster != clusterName {
-					slog.InfoContext(ctx, "scheduled backup no longer belongs to this cluster", "scheduledBackup", scheduledBackupName)
-					stopBackupWatcher(scheduledBackupName)
-				}
-			}
+		watcher, err := dynamicClient.Resource(scheduledBackupGVR).Namespace(namespace).Watch(ctx, metav1.ListOptions{
+			ResourceVersion: resourceVersion,
+		})
+		if err != nil {
+			// Network or API error, return to trigger external retry with backoff
+			return fmt.Errorf("failed to watch scheduled backups: %w", err)
 		}
+
+		// Process events from this watcher
+		func() {
+			defer watcher.Stop()
+
+			for {
+				select {
+				case <-ctx.Done():
+					slog.DebugContext(ctx, "stopping watch for scheduled backups")
+					return
+
+				case event, ok := <-watcher.ResultChan():
+					if !ok {
+						// Watcher closed, will restart with new watcher
+						slog.DebugContext(ctx, "scheduled backup watcher closed, restarting watch")
+						return
+					}
+
+					scheduledBackup, ok := event.Object.(*unstructured.Unstructured)
+					if !ok {
+						continue
+					}
+
+					// Check if this scheduled backup belongs to our cluster
+					cluster, found, err := unstructured.NestedString(scheduledBackup.Object, "spec", "cluster", "name")
+					if err != nil || !found || cluster != clusterName {
+						continue
+					}
+
+					scheduledBackupName := scheduledBackup.GetName()
+
+					switch event.Type {
+					case watch.Added:
+						slog.InfoContext(ctx, "new scheduled backup detected", "scheduledBackup", scheduledBackupName)
+						startBackupWatcher(scheduledBackupName)
+
+					case watch.Deleted:
+						slog.InfoContext(ctx, "scheduled backup deleted", "scheduledBackup", scheduledBackupName)
+						stopBackupWatcher(scheduledBackupName)
+
+					case watch.Modified:
+						// Check if cluster name changed
+						if cluster != clusterName {
+							slog.InfoContext(ctx, "scheduled backup no longer belongs to this cluster", "scheduledBackup", scheduledBackupName)
+							stopBackupWatcher(scheduledBackupName)
+						}
+					}
+				}
+			}
+		}()
+
+		// Check if context was cancelled
+		if ctx.Err() != nil {
+			return nil
+		}
+
+		// Watcher closed normally, restart immediately with a fresh list
+		slog.DebugContext(ctx, "restarting scheduled backup watch")
+
+		// Get a fresh list to update the resource version
+		list, err := dynamicClient.Resource(scheduledBackupGVR).Namespace(namespace).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			// Network or API error, return to trigger external retry with backoff
+			return fmt.Errorf("failed to list scheduled backups: %w", err)
+		}
+		resourceVersion = list.GetResourceVersion()
 	}
 }
 
 // watchBackupsForScheduledBackup watches for Backup resources owned by the given ScheduledBackup
-func watchBackupsForScheduledBackup(ctx context.Context, dynamicClient dynamic.Interface, scheduledBackupName, namespace string) error {
+func watchBackupsForScheduledBackup(ctx context.Context, dynamicClient dynamic.Interface, scheduledBackupName, namespace string) {
 	slog.DebugContext(ctx, "starting to watch backups", "scheduledBackup", scheduledBackupName)
+
+	// Retry loop with exponential backoff
+	initialBackoff := time.Second
+	backoff := initialBackoff
+	maxBackoff := time.Minute
+
+	for {
+		select {
+		case <-ctx.Done():
+			slog.DebugContext(ctx, "context cancelled, stopping backup watcher", "scheduledBackup", scheduledBackupName)
+			return
+		default:
+		}
+
+		watchStart := time.Now()
+		err := watchBackupsForScheduledBackupOnce(ctx, dynamicClient, scheduledBackupName, namespace)
+		if err != nil {
+			if ctx.Err() != nil {
+				// Context was cancelled, exit gracefully
+				return
+			}
+
+			// Reset backoff if the previous watch ran long enough to be considered stable
+			if time.Since(watchStart) > backoff {
+				backoff = initialBackoff
+			}
+
+			slog.ErrorContext(ctx, "error watching backups, retrying", "scheduledBackup", scheduledBackupName, "error", err, "backoff", backoff)
+
+			timer := time.NewTimer(backoff)
+			select {
+			case <-timer.C:
+				backoff *= 2
+				if backoff > maxBackoff {
+					backoff = maxBackoff
+				}
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			}
+		} else {
+			// Successful completion (context cancelled)
+			return
+		}
+	}
+}
+
+// watchBackupsForScheduledBackupOnce performs a single watch cycle
+func watchBackupsForScheduledBackupOnce(ctx context.Context, dynamicClient dynamic.Interface, scheduledBackupName, namespace string) error {
 
 	// First, list existing backups to get the current ResourceVersion
 	// This allows us to watch only new backups created after this point
@@ -343,9 +461,9 @@ func watchBackupsForScheduledBackup(ctx context.Context, dynamicClient dynamic.I
 
 		case event, ok := <-watcher.ResultChan():
 			if !ok {
-				// Watcher closed, need to restart
-				slog.DebugContext(ctx, "backup watcher closed, restarting", "scheduledBackup", scheduledBackupName)
-				return watchBackupsForScheduledBackup(ctx, dynamicClient, scheduledBackupName, namespace)
+				// Watcher closed, return error to trigger retry
+				slog.DebugContext(ctx, "backup watcher channel closed", "scheduledBackup", scheduledBackupName)
+				return fmt.Errorf("watcher channel closed")
 			}
 
 			backup, ok := event.Object.(*unstructured.Unstructured)
