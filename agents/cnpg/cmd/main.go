@@ -26,6 +26,9 @@ import (
 const (
 	MY_POD_NAME  = "MY_POD_NAME"
 	MY_NAMESPACE = "MY_NAMESPACE"
+
+	backupPhaseCompleted = "completed"
+	backupPhaseFailed    = "failed"
 )
 
 var (
@@ -106,7 +109,6 @@ func main() {
 		initialBackoff := time.Second
 		backoff := initialBackoff
 		maxBackoff := 5 * time.Minute
-		hadError := false
 
 		for {
 			select {
@@ -117,7 +119,7 @@ func main() {
 			}
 
 			watchStart := time.Now()
-			if err := watchScheduledBackups(ctx, dynamicClient, clusterName, myNamespace, hadError); err != nil {
+			if err := watchScheduledBackups(ctx, dynamicClient, clusterName, myNamespace); err != nil {
 				if ctx.Err() != nil {
 					// Context was cancelled, exit gracefully
 					return
@@ -130,7 +132,6 @@ func main() {
 
 				slog.ErrorContext(ctx, "error watching scheduled backups, retrying", "error", err, "backoff", backoff)
 				outputs.SetUnknown(ctx, fmt.Errorf("temporarily unable to watch backups: %w", err))
-				hadError = true
 
 				timer := time.NewTimer(backoff)
 				select {
@@ -210,7 +211,7 @@ func getClusterName(ctx context.Context, clientset *kubernetes.Clientset, podNam
 }
 
 // watchScheduledBackups watches for ScheduledBackup resources and manages backup watchers dynamically
-func watchScheduledBackups(ctx context.Context, dynamicClient dynamic.Interface, clusterName, namespace string, recoveryFromError bool) error {
+func watchScheduledBackups(ctx context.Context, dynamicClient dynamic.Interface, clusterName, namespace string) error {
 	slog.DebugContext(ctx, "starting to watch scheduled backups", "clusterName", clusterName)
 
 	// Map to track active backup watchers: scheduledBackupName -> cancel function
@@ -282,12 +283,6 @@ func watchScheduledBackups(ctx context.Context, dynamicClient dynamic.Interface,
 		return fmt.Errorf("failed to list scheduled backups: %w", err)
 	}
 
-	// If we're recovering from an error, send a success status to clear the alert
-	if recoveryFromError {
-		slog.InfoContext(ctx, "connection restored after temporary failure")
-		outputs.SetSuccess(ctx, "monitoring connection restored, waiting for next backup", nil)
-	}
-
 	for _, item := range list.Items {
 		cluster, found, err := unstructured.NestedString(item.Object, "spec", "cluster", "name")
 		if err != nil || !found || cluster != clusterName {
@@ -296,84 +291,61 @@ func watchScheduledBackups(ctx context.Context, dynamicClient dynamic.Interface,
 		startBackupWatcher(item.GetName())
 	}
 
-	// Start watching from the current resource version with retry logic
+	// Start watching from the current resource version
 	resourceVersion := list.GetResourceVersion()
+	watcher, err := dynamicClient.Resource(scheduledBackupGVR).Namespace(namespace).Watch(ctx, metav1.ListOptions{
+		ResourceVersion: resourceVersion,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to watch scheduled backups: %w", err)
+	}
+	defer watcher.Stop()
 
-	// Watch loop with internal retry
 	for {
-		watcher, err := dynamicClient.Resource(scheduledBackupGVR).Namespace(namespace).Watch(ctx, metav1.ListOptions{
-			ResourceVersion: resourceVersion,
-		})
-		if err != nil {
-			// Network or API error, return to trigger external retry with backoff
-			return fmt.Errorf("failed to watch scheduled backups: %w", err)
-		}
+		select {
+		case <-ctx.Done():
+			slog.DebugContext(ctx, "stopping watch for scheduled backups")
+			// Cleanup is handled by defer
+			return nil
 
-		// Process events from this watcher
-		func() {
-			defer watcher.Stop()
+		case event, ok := <-watcher.ResultChan():
+			if !ok {
+				// Watcher closed, need to restart
+				slog.DebugContext(ctx, "scheduled backup watcher closed, will retry")
+				// Return error to trigger retry with backoff
+				return fmt.Errorf("watcher channel closed")
+			}
 
-			for {
-				select {
-				case <-ctx.Done():
-					slog.DebugContext(ctx, "stopping watch for scheduled backups")
-					return
+			scheduledBackup, ok := event.Object.(*unstructured.Unstructured)
+			if !ok {
+				continue
+			}
 
-				case event, ok := <-watcher.ResultChan():
-					if !ok {
-						// Watcher closed, will restart with new watcher
-						slog.DebugContext(ctx, "scheduled backup watcher closed, restarting watch")
-						return
-					}
+			// Check if this scheduled backup belongs to our cluster
+			cluster, found, err := unstructured.NestedString(scheduledBackup.Object, "spec", "cluster", "name")
+			if err != nil || !found || cluster != clusterName {
+				continue
+			}
 
-					scheduledBackup, ok := event.Object.(*unstructured.Unstructured)
-					if !ok {
-						continue
-					}
+			scheduledBackupName := scheduledBackup.GetName()
 
-					// Check if this scheduled backup belongs to our cluster
-					cluster, found, err := unstructured.NestedString(scheduledBackup.Object, "spec", "cluster", "name")
-					if err != nil || !found || cluster != clusterName {
-						continue
-					}
+			switch event.Type {
+			case watch.Added:
+				slog.InfoContext(ctx, "new scheduled backup detected", "scheduledBackup", scheduledBackupName)
+				startBackupWatcher(scheduledBackupName)
 
-					scheduledBackupName := scheduledBackup.GetName()
+			case watch.Deleted:
+				slog.InfoContext(ctx, "scheduled backup deleted", "scheduledBackup", scheduledBackupName)
+				stopBackupWatcher(scheduledBackupName)
 
-					switch event.Type {
-					case watch.Added:
-						slog.InfoContext(ctx, "new scheduled backup detected", "scheduledBackup", scheduledBackupName)
-						startBackupWatcher(scheduledBackupName)
-
-					case watch.Deleted:
-						slog.InfoContext(ctx, "scheduled backup deleted", "scheduledBackup", scheduledBackupName)
-						stopBackupWatcher(scheduledBackupName)
-
-					case watch.Modified:
-						// Check if cluster name changed
-						if cluster != clusterName {
-							slog.InfoContext(ctx, "scheduled backup no longer belongs to this cluster", "scheduledBackup", scheduledBackupName)
-							stopBackupWatcher(scheduledBackupName)
-						}
-					}
+			case watch.Modified:
+				// Check if cluster name changed
+				if cluster != clusterName {
+					slog.InfoContext(ctx, "scheduled backup no longer belongs to this cluster", "scheduledBackup", scheduledBackupName)
+					stopBackupWatcher(scheduledBackupName)
 				}
 			}
-		}()
-
-		// Check if context was cancelled
-		if ctx.Err() != nil {
-			return nil
 		}
-
-		// Watcher closed normally, restart immediately with a fresh list
-		slog.DebugContext(ctx, "restarting scheduled backup watch")
-
-		// Get a fresh list to update the resource version
-		list, err := dynamicClient.Resource(scheduledBackupGVR).Namespace(namespace).List(ctx, metav1.ListOptions{})
-		if err != nil {
-			// Network or API error, return to trigger external retry with backoff
-			return fmt.Errorf("failed to list scheduled backups: %w", err)
-		}
-		resourceVersion = list.GetResourceVersion()
 	}
 }
 
@@ -431,11 +403,13 @@ func watchBackupsForScheduledBackup(ctx context.Context, dynamicClient dynamic.I
 func watchBackupsForScheduledBackupOnce(ctx context.Context, dynamicClient dynamic.Interface, scheduledBackupName, namespace string) error {
 
 	// First, list existing backups to get the current ResourceVersion
-	// This allows us to watch only new backups created after this point
 	list, err := dynamicClient.Resource(backupGVR).Namespace(namespace).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to list backups: %w", err)
 	}
+
+	mostRecentBackup, mostRecentBackupTime := findMostRecentBackup(list, scheduledBackupName)
+	lastPhase, lastErrMsg := reportInitialBackupStatus(ctx, scheduledBackupName, mostRecentBackup, mostRecentBackupTime)
 
 	// Start watching from the current ResourceVersion to only get new events
 	resourceVersion := list.GetResourceVersion()
@@ -453,11 +427,27 @@ func watchBackupsForScheduledBackupOnce(ctx context.Context, dynamicClient dynam
 	// Track which backups we're currently monitoring
 	trackedBackups := make(map[string]bool)
 
+	// Setup heartbeat ticker to send periodic status updates to Icinga
+	// This ensures Icinga knows the monitoring is still active even if no backups occur
+	heartbeatInterval := 1 * time.Hour // Send heartbeat every hour
+	heartbeatTicker := time.NewTicker(heartbeatInterval)
+	defer heartbeatTicker.Stop()
+
+	lastHeartbeat := time.Now()
+	// Keep track of the last backup time for heartbeat messages
+	var lastBackupTime time.Time
+	if mostRecentBackup != nil {
+		lastBackupTime = mostRecentBackupTime
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
 			slog.DebugContext(ctx, "stopping watch for backups", "scheduledBackup", scheduledBackupName)
 			return nil
+
+		case <-heartbeatTicker.C:
+			lastHeartbeat = sendHeartbeat(ctx, scheduledBackupName, lastHeartbeat, lastBackupTime, lastPhase, lastErrMsg)
 
 		case event, ok := <-watcher.ResultChan():
 			if !ok {
@@ -480,78 +470,16 @@ func watchBackupsForScheduledBackupOnce(ctx context.Context, dynamicClient dynam
 
 			switch event.Type {
 			case watch.Added, watch.Modified:
-				// Check if backup is completed
-				phase, found, err := unstructured.NestedString(backup.Object, "status", "phase")
+				finished, phase, errMsg, err := handleBackupEvent(ctx, scheduledBackupName, backupName, backup, trackedBackups)
 				if err != nil {
-					slog.ErrorContext(ctx, "failed to get backup phase", "backup", backupName, "error", err)
 					continue
 				}
-
-				if !found {
-					// No phase yet, backup just created
-					if !trackedBackups[backupName] {
-						slog.InfoContext(ctx, "new backup detected", "scheduledBackup", scheduledBackupName, "backup", backupName)
-						trackedBackups[backupName] = true
-					}
-					continue
-				}
-
-				// Log the backup status
-				if !trackedBackups[backupName] {
-					slog.InfoContext(ctx, "tracking backup", "scheduledBackup", scheduledBackupName, "backup", backupName, "phase", phase)
-					trackedBackups[backupName] = true
-				} else {
-					slog.InfoContext(ctx, "backup status update", "scheduledBackup", scheduledBackupName, "backup", backupName, "phase", phase)
-				}
-
-				// If the backup is completed or failed
-				if phase == "completed" || phase == "failed" {
-					if phase == "completed" {
-						startedAtStr, _, err := unstructured.NestedString(backup.Object, "status", "startedAt")
-						if err != nil {
-							slog.ErrorContext(ctx, "failed to get backup startedAt", "backup", backupName, "error", err)
-							continue
-						}
-
-						stoppedAtStr, _, err := unstructured.NestedString(backup.Object, "status", "stoppedAt")
-						if err != nil {
-							slog.ErrorContext(ctx, "failed to get backup stoppedAt", "backup", backupName, "error", err)
-							continue
-						}
-
-						startedAt, err := time.Parse(time.RFC3339, startedAtStr)
-						if err != nil {
-							slog.ErrorContext(ctx, "failed to parse backup startedAt", "backup", backupName, "error", err)
-							continue
-						}
-
-						stoppedAt, err := time.Parse(time.RFC3339, stoppedAtStr)
-						if err != nil {
-							slog.ErrorContext(ctx, "failed to parse backup stoppedAt", "backup", backupName, "error", err)
-							continue
-						}
-
-						duration := stoppedAt.Sub(startedAt)
-
-						slog.InfoContext(ctx, "backup completed", "scheduledBackup", scheduledBackupName, "backup", backupName)
-						outputs.SetSuccess(ctx, fmt.Sprintf("backup process completed successfully in %s at %s", duration, stoppedAt), map[string]any{
-							"duration": duration.Seconds(),
-						})
-					} else {
-						errorMsg, found, err := unstructured.NestedString(backup.Object, "status", "error")
-						if err != nil {
-							slog.ErrorContext(ctx, "failed to get backup error", "backup", backupName, "error", err)
-							continue
-						}
-
-						if !found {
-							errorMsg = "unknown error"
-						}
-
-						slog.WarnContext(ctx, "backup failed", "scheduledBackup", scheduledBackupName, "backup", backupName, "error", errorMsg)
-						outputs.SetError(ctx, fmt.Errorf("backup failed: %s", errorMsg))
-					}
-
+				if !finished.IsZero() {
+					lastBackupTime = finished
+					lastPhase = phase
+					lastErrMsg = errMsg
+					heartbeatTicker.Reset(heartbeatInterval)
+					lastHeartbeat = time.Now()
 					delete(trackedBackups, backupName)
 				}
 
@@ -563,6 +491,230 @@ func watchBackupsForScheduledBackupOnce(ctx context.Context, dynamicClient dynam
 	}
 }
 
+// findMostRecentBackup returns the most recently completed or failed backup owned by scheduledBackupName.
+func findMostRecentBackup(list *unstructured.UnstructuredList, scheduledBackupName string) (*unstructured.Unstructured, time.Time) {
+	var mostRecent *unstructured.Unstructured
+	var mostRecentTime time.Time
+
+	for _, item := range list.Items {
+		if !isOwnedBy(&item, scheduledBackupName, "ScheduledBackup") {
+			continue
+		}
+
+		phase, found, err := unstructured.NestedString(item.Object, "status", "phase")
+		if err != nil || !found {
+			continue
+		}
+
+		if phase != backupPhaseCompleted && phase != backupPhaseFailed {
+			continue
+		}
+
+		stoppedAtStr, found, err := unstructured.NestedString(item.Object, "status", "stoppedAt")
+		if err != nil || !found {
+			continue
+		}
+
+		stoppedAt, err := time.Parse(time.RFC3339, stoppedAtStr)
+		if err != nil {
+			continue
+		}
+
+		if mostRecent == nil || stoppedAt.After(mostRecentTime) {
+			itemCopy := item.DeepCopy()
+			mostRecent = itemCopy
+			mostRecentTime = stoppedAt
+		}
+	}
+
+	return mostRecent, mostRecentTime
+}
+
+// reportInitialBackupStatus sends the current backup status to Icinga at startup or after a retry.
+// Returns the phase and error message of the reported backup (empty strings if none found).
+func reportInitialBackupStatus(ctx context.Context, scheduledBackupName string, mostRecentBackup *unstructured.Unstructured, mostRecentBackupTime time.Time) (phase, errMsg string) {
+	if mostRecentBackup == nil {
+		slog.InfoContext(ctx, "no backup found at startup", "scheduledBackup", scheduledBackupName)
+		outputs.SetUnknown(ctx, fmt.Errorf("monitoring started, no backup executed yet"))
+		return "", ""
+	}
+
+	backupName := mostRecentBackup.GetName()
+	var found bool
+	phase, found, _ = unstructured.NestedString(mostRecentBackup.Object, "status", "phase")
+	if !found || (phase != backupPhaseCompleted && phase != backupPhaseFailed) {
+		slog.WarnContext(ctx, "most recent backup has unrecognized phase at startup", "scheduledBackup", scheduledBackupName, "backup", backupName, "phase", phase)
+		outputs.SetUnknown(ctx, fmt.Errorf("most recent backup %q has unrecognized phase %q", backupName, phase))
+		return "", ""
+	}
+
+	timeSinceExecution := time.Since(mostRecentBackupTime)
+
+	if phase == backupPhaseCompleted {
+		startedAtStr, _, _ := unstructured.NestedString(mostRecentBackup.Object, "status", "startedAt")
+		startedAt, parseErr := time.Parse(time.RFC3339, startedAtStr)
+
+		slog.InfoContext(ctx, "found most recent backup at startup",
+			"scheduledBackup", scheduledBackupName,
+			"backup", backupName,
+			"phase", phase,
+			"completedAt", mostRecentBackupTime,
+			"timeAgo", timeSinceExecution)
+
+		perfData := map[string]any{
+			"executed_at":          mostRecentBackupTime.Unix(),
+			"time_since_execution": timeSinceExecution.Seconds(),
+		}
+		var msg string
+		if parseErr == nil {
+			duration := mostRecentBackupTime.Sub(startedAt)
+			perfData["duration"] = duration.Seconds()
+			msg = fmt.Sprintf("last backup executed %s ago (completed successfully in %s)", formatDuration(timeSinceExecution), duration.Round(time.Second))
+		} else {
+			msg = fmt.Sprintf("last backup executed %s ago (completed successfully)", formatDuration(timeSinceExecution))
+		}
+		outputs.SetSuccess(ctx, msg, perfData)
+		return phase, ""
+	}
+
+	// phase == backupPhaseFailed
+	errMsg, found, _ = unstructured.NestedString(mostRecentBackup.Object, "status", "error")
+	if !found || errMsg == "" {
+		errMsg = "unknown error"
+	}
+
+	slog.WarnContext(ctx, "found most recent backup at startup (failed)",
+		"scheduledBackup", scheduledBackupName,
+		"backup", backupName,
+		"phase", phase,
+		"failedAt", mostRecentBackupTime,
+		"timeAgo", timeSinceExecution,
+		"error", errMsg)
+
+	outputs.SetError(ctx, fmt.Errorf("last backup executed %s ago (failed: %s)", formatDuration(timeSinceExecution), errMsg))
+	return phase, errMsg
+}
+
+// sendHeartbeat sends a periodic status update to Icinga, re-emitting the last known backup state.
+func sendHeartbeat(ctx context.Context, scheduledBackupName string, lastHeartbeat time.Time, lastBackupTime time.Time, lastPhase, lastErrMsg string) time.Time {
+	timeSinceLastHeartbeat := time.Since(lastHeartbeat)
+
+	slog.DebugContext(ctx, "sending heartbeat to Icinga", "scheduledBackup", scheduledBackupName, "lastPhase", lastPhase, "timeSinceLastHeartbeat", timeSinceLastHeartbeat)
+
+	switch lastPhase {
+	case backupPhaseCompleted:
+		timeSinceLastBackup := time.Since(lastBackupTime)
+		outputs.SetSuccess(ctx, fmt.Sprintf("last backup executed %s ago (completed successfully)", formatDuration(timeSinceLastBackup)), map[string]any{
+			"executed_at":          lastBackupTime.Unix(),
+			"time_since_execution": timeSinceLastBackup.Seconds(),
+		})
+	case backupPhaseFailed:
+		timeSinceLastBackup := time.Since(lastBackupTime)
+		outputs.SetError(ctx, fmt.Errorf("last backup executed %s ago (failed: %s)", formatDuration(timeSinceLastBackup), lastErrMsg))
+	default:
+		outputs.SetUnknown(ctx, fmt.Errorf("monitoring active, no backup executed yet"))
+	}
+
+	return time.Now()
+}
+
+// handleBackupEvent processes an Added or Modified backup event.
+// Returns the backup completion time (non-zero), phase, errMsg if the backup finished, and any processing error.
+func handleBackupEvent(ctx context.Context, scheduledBackupName, backupName string, backup *unstructured.Unstructured, trackedBackups map[string]bool) (time.Time, string, string, error) {
+	phase, found, err := unstructured.NestedString(backup.Object, "status", "phase")
+	if err != nil {
+		slog.ErrorContext(ctx, "failed to get backup phase", "backup", backupName, "error", err)
+		return time.Time{}, "", "", err
+	}
+
+	if !found {
+		if !trackedBackups[backupName] {
+			slog.InfoContext(ctx, "new backup detected", "scheduledBackup", scheduledBackupName, "backup", backupName)
+			trackedBackups[backupName] = true
+		}
+		return time.Time{}, "", "", nil
+	}
+
+	if !trackedBackups[backupName] {
+		slog.InfoContext(ctx, "tracking backup", "scheduledBackup", scheduledBackupName, "backup", backupName, "phase", phase)
+		trackedBackups[backupName] = true
+	} else {
+		slog.InfoContext(ctx, "backup status update", "scheduledBackup", scheduledBackupName, "backup", backupName, "phase", phase)
+	}
+
+	if phase != backupPhaseCompleted && phase != backupPhaseFailed {
+		return time.Time{}, "", "", nil
+	}
+
+	finishedAt, errMsg, err := handleFinishedBackup(ctx, scheduledBackupName, backupName, backup, phase)
+	if err != nil {
+		return time.Time{}, "", "", err
+	}
+
+	return finishedAt, phase, errMsg, nil
+}
+
+// handleFinishedBackup processes a completed or failed backup and reports to Icinga.
+// Returns the backup stop time and the error message if failed.
+func handleFinishedBackup(ctx context.Context, scheduledBackupName, backupName string, backup *unstructured.Unstructured, phase string) (time.Time, string, error) {
+	if phase == backupPhaseCompleted {
+		startedAtStr, _, err := unstructured.NestedString(backup.Object, "status", "startedAt")
+		if err != nil {
+			slog.ErrorContext(ctx, "failed to get backup startedAt", "backup", backupName, "error", err)
+			return time.Time{}, "", err
+		}
+
+		stoppedAtStr, _, err := unstructured.NestedString(backup.Object, "status", "stoppedAt")
+		if err != nil {
+			slog.ErrorContext(ctx, "failed to get backup stoppedAt", "backup", backupName, "error", err)
+			return time.Time{}, "", err
+		}
+
+		startedAt, err := time.Parse(time.RFC3339, startedAtStr)
+		if err != nil {
+			slog.ErrorContext(ctx, "failed to parse backup startedAt", "backup", backupName, "error", err)
+			return time.Time{}, "", err
+		}
+
+		stoppedAt, err := time.Parse(time.RFC3339, stoppedAtStr)
+		if err != nil {
+			slog.ErrorContext(ctx, "failed to parse backup stoppedAt", "backup", backupName, "error", err)
+			return time.Time{}, "", err
+		}
+
+		duration := stoppedAt.Sub(startedAt)
+		slog.InfoContext(ctx, "backup completed", "scheduledBackup", scheduledBackupName, "backup", backupName)
+		outputs.SetSuccess(ctx, fmt.Sprintf("backup process completed successfully in %s at %s", duration, stoppedAt), map[string]any{
+			"duration": duration.Seconds(),
+		})
+
+		return stoppedAt, "", nil
+	}
+
+	// phase == backupPhaseFailed
+	errorMsg, found, err := unstructured.NestedString(backup.Object, "status", "error")
+	if err != nil {
+		slog.ErrorContext(ctx, "failed to get backup error", "backup", backupName, "error", err)
+		return time.Time{}, "", err
+	}
+
+	if !found {
+		errorMsg = "unknown error"
+	}
+
+	slog.WarnContext(ctx, "backup failed", "scheduledBackup", scheduledBackupName, "backup", backupName, "error", errorMsg)
+	outputs.SetError(ctx, fmt.Errorf("backup failed: %s", errorMsg))
+
+	stoppedAtStr, _, _ := unstructured.NestedString(backup.Object, "status", "stoppedAt")
+	if stoppedAtStr != "" {
+		if stoppedAt, err := time.Parse(time.RFC3339, stoppedAtStr); err == nil {
+			return stoppedAt, errorMsg, nil
+		}
+	}
+
+	return time.Now(), errorMsg, nil
+}
+
 // isOwnedBy checks if the object is owned by a resource with the given name and kind
 func isOwnedBy(obj *unstructured.Unstructured, ownerName, ownerKind string) bool {
 	ownerRefs := obj.GetOwnerReferences()
@@ -572,4 +724,43 @@ func isOwnedBy(obj *unstructured.Unstructured, ownerName, ownerKind string) bool
 		}
 	}
 	return false
+}
+
+// formatDuration formats a duration in a human-readable format
+func formatDuration(d time.Duration) string {
+	d = d.Round(time.Second)
+
+	days := d / (24 * time.Hour)
+	d -= days * 24 * time.Hour
+
+	hours := d / time.Hour
+	d -= hours * time.Hour
+
+	minutes := d / time.Minute
+	d -= minutes * time.Minute
+
+	seconds := d / time.Second
+
+	if days > 0 {
+		if hours > 0 {
+			return fmt.Sprintf("%dd%dh", days, hours)
+		}
+		return fmt.Sprintf("%dd", days)
+	}
+
+	if hours > 0 {
+		if minutes > 0 {
+			return fmt.Sprintf("%dh%dm", hours, minutes)
+		}
+		return fmt.Sprintf("%dh", hours)
+	}
+
+	if minutes > 0 {
+		if seconds > 0 {
+			return fmt.Sprintf("%dm%ds", minutes, seconds)
+		}
+		return fmt.Sprintf("%dm", minutes)
+	}
+
+	return fmt.Sprintf("%ds", seconds)
 }
