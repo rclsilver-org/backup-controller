@@ -16,6 +16,9 @@ const (
 	// AutoDetectContainerAnnotation specify the volume container to use when auto-detect is enabled
 	AutoDetectContainerAnnotation = "backup-controller.rclsilver-org.github.com/detect.container"
 
+	// RetentionDaysAnnotation is the annotation used to override BC_RETENTION_DAYS for a specific pod
+	RetentionDaysAnnotation = "backup-controller.rclsilver-org.github.com/retention-days"
+
 	// MutatedLabel is the label set by the controller when a pod is mutated
 	MutatedLabel = "backup-controller.rclsilver-org.github.com/mutated"
 )

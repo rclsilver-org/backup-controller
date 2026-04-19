@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strconv"
 
 	"text/template"
 
@@ -187,6 +188,17 @@ func (d *PodCustomDefaulter) Default(ctx context.Context, obj runtime.Object) er
 		Name:  "BC_SCHEDULE",
 		Value: schedule.Spec.Schedule,
 	})
+
+	if retentionDaysStr, ok := annotations[constants.RetentionDaysAnnotation]; ok {
+		retentionDays, err := strconv.Atoi(retentionDaysStr)
+		if err != nil || retentionDays <= 0 {
+			return fmt.Errorf("annotation %q must be a positive integer, got %q", constants.RetentionDaysAnnotation, retentionDaysStr)
+		}
+		newContainer.Env = append(newContainer.Env, corev1.EnvVar{
+			Name:  "BC_RETENTION_DAYS",
+			Value: retentionDaysStr,
+		})
+	}
 
 	var zero int64 = 0
 	var false bool = false
