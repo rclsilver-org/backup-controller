@@ -33,11 +33,21 @@ else
   source "${BC_OUTPUTS_DIR}/void.sh"
 fi
 
-# Verify or initialize the Restic repository
-if restic snapshots >/dev/null 2>&1; then
+# Verify or initialize the Restic repository.
+# Probe the state with a lock-free `restic cat config` and branch on restic's
+# exit codes (restic >= 0.17). Using --no-lock makes this immune to any lock
+# left by a concurrent or interrupted run, so a locked repository is never
+# mistaken for a missing one:
+#   0  -> repository is present and readable
+#   10 -> repository does not exist -> initialize it
+#   *  -> any other error (locked, wrong password, unreachable) -> fail loudly
+#         and DO NOT init, to avoid clobbering an existing repository.
+rc=0
+restic cat config --no-lock >/dev/null 2>&1 || rc=$?
+if [ "${rc}" -eq 0 ]; then
   log "Restic repository is accessible and valid."
-else
-  log "Restic repository not found. Initializing a new repository."
+elif [ "${rc}" -eq 10 ]; then
+  log "Restic repository does not exist. Initializing a new repository."
   if restic init; then
     log "Restic repository initialized successfully."
   else
@@ -45,6 +55,10 @@ else
     output_set_error "restic repository initialization failed at $(date '+%Y-%m-%d %H:%M:%S')"
     exit 1
   fi
+else
+  log "ERROR: Restic repository unreachable (exit code ${rc}); not initializing to avoid clobbering an existing repository."
+  output_set_error "restic repository check failed with exit code ${rc} at $(date '+%Y-%m-%d %H:%M:%S')"
+  exit 1
 fi
 
 # Compute the command if not set
@@ -65,10 +79,23 @@ fi
 
 # Execute the backup command
 log "Executing the backup command: ${BC_CMD}"
-if ${BC_CMD}; then
+rc=0
+${BC_CMD} || rc=$?
+if [ "${rc}" -eq 11 ]; then
+  # Repository is locked (restic exit code 11). It may be a stale lock left by
+  # an interrupted run, or a backup still in progress. `restic unlock` (without
+  # --remove-all) only removes locks restic itself considers stale, so a lock
+  # actively refreshed by a running backup is preserved and the retry will
+  # correctly fail again. Retry once.
+  log "Repository is locked (exit 11). Removing stale locks and retrying once."
+  restic unlock || true
+  rc=0
+  ${BC_CMD} || rc=$?
+fi
+if [ "${rc}" -eq 0 ]; then
   log "Backup command executed successfully."
 else
-  log "ERROR: Backup command failed. Please check the logs and configuration."
+  log "ERROR: Backup command failed (exit code ${rc}). Please check the logs and configuration."
   output_set_error "backup command execution failed at $(date '+%Y-%m-%d %H:%M:%S')"
   exit 1
 fi
