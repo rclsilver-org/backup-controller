@@ -52,10 +52,15 @@ if [ -z "${BC_CMD}" ]; then
   BC_LIST_FILES="/tmp/list-files.txt"
   IFS=':' read -r -a BC_PATHS <<< "$BC_BACKUP_DIR"
   > ${BC_LIST_FILES}
+  BC_EXCLUDE_ARGS=""
   for path in "${BC_PATHS[@]}"; do
       echo "$path" >> ${BC_LIST_FILES}
+      # Honor a per-path ignore file listing exclude patterns (one per line)
+      if [ -f "${path}/.restic-ignore" ]; then
+          BC_EXCLUDE_ARGS="${BC_EXCLUDE_ARGS} --exclude-file=${path}/.restic-ignore"
+      fi
   done
-  BC_CMD="restic backup --files-from=${BC_LIST_FILES}"
+  BC_CMD="restic backup --files-from=${BC_LIST_FILES}${BC_EXCLUDE_ARGS}"
 fi
 
 # Execute the backup command
