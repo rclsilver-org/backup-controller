@@ -74,6 +74,15 @@ else
   exit 1
 fi
 
+# Routinely drop stale locks left behind when a run was interrupted or when the
+# lock deletion failed against a slow backend. `restic unlock` (without
+# --remove-all) only removes locks whose owner is gone, so a lock actively
+# refreshed by a concurrent run is preserved. Without this, leaked non-exclusive
+# backup locks accumulate indefinitely and eventually make every restic call
+# time out while listing them.
+log "Removing stale locks (if any)."
+restic unlock || log "WARNING: could not remove stale locks (continuing)."
+
 # Compute the command if not set
 if [ -z "${BC_CMD}" ]; then
   BC_LIST_FILES="/tmp/list-files.txt"
