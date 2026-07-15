@@ -12,6 +12,19 @@ if [ -f "${BC_ENV}" ]; then
   source ${BC_ENV}
 fi
 
+# Prevent concurrent runs against the same repository. A slow prune or check
+# must never let the next scheduled run pile up on top of it: overlapping runs
+# stack restic locks and I/O and, over time, can wedge the whole repository.
+# The lock is keyed on the repository so distinct backups never block each other.
+if [ -z "${BC_LOCK_FILE}" ]; then
+  BC_LOCK_FILE="${TMPDIR:-/tmp}/backup-controller-$(repo_key).lock"
+fi
+exec 9>"${BC_LOCK_FILE}"
+if ! flock -n 9; then
+  log "Another backup run for this repository is already in progress; skipping."
+  exit 0
+fi
+
 START_TIME=$(date +%s)
 
 log "Starting the backup process."
@@ -100,28 +113,54 @@ else
   exit 1
 fi
 
-# Purge older snapshots if needed
+# Enforce the retention policy on every run. `restic forget` only rewrites
+# snapshot references, which is cheap; the expensive repacking of unused data is
+# done separately by `prune` below, on its own (less frequent) cadence.
 if [ ! -z "${BC_RETENTION_DAYS}" ] && [ "${BC_RETENTION_DAYS}" -gt 0 ]; then
-  log "Starting the cleanup of older snapshots. Retention policy: keep snapshots from the last ${BC_RETENTION_DAYS} days."
+  log "Applying retention policy: keep snapshots from the last ${BC_RETENTION_DAYS} days."
 
-  if restic forget -d ${BC_RETENTION_DAYS} -c --prune; then
-    log "Older snapshots have been successfully pruned based on the retention policy."
+  if restic forget -d ${BC_RETENTION_DAYS} -c; then
+    log "Retention policy applied successfully."
   else
-    log "ERROR: Failed to prune older snapshots. Please check the Restic logs for details."
-    output_set_error "snapshot pruning failed at $(date '+%Y-%m-%d %H:%M:%S')"
+    log "ERROR: Failed to apply the retention policy. Please check the Restic logs for details."
+    output_set_error "snapshot forget failed at $(date '+%Y-%m-%d %H:%M:%S')"
     exit 1
   fi
 else
-  log "No snapshot retention policy defined or retention count is set to 0. Skipping snapshot pruning."
+  log "No snapshot retention policy defined or retention count is set to 0. Skipping snapshot forget."
 fi
 
-log "Performing a repository integrity check."
-if restic check; then
-  log "Repository integrity check completed successfully. No errors found."
+# Prune (repack unused data) is I/O heavy on the object store, so it runs at most
+# once every BC_PRUNE_INTERVAL seconds instead of on every backup. Leaving
+# BC_PRUNE_INTERVAL unset or 0 keeps the previous behavior (prune on every run).
+if maintenance_due "prune" "${BC_PRUNE_INTERVAL:-0}"; then
+  log "Pruning the repository (repacking unused data)."
+  if restic prune; then
+    maintenance_mark "prune"
+    log "Repository pruned successfully."
+  else
+    log "ERROR: Failed to prune the repository. Please check the Restic logs for details."
+    output_set_error "repository prune failed at $(date '+%Y-%m-%d %H:%M:%S')"
+    exit 1
+  fi
 else
-  log "ERROR: Repository integrity check failed. Please investigate the issue."
-  output_set_error "restic repository integrity check failed at $(date '+%Y-%m-%d %H:%M:%S')"
-  exit 1
+  log "Skipping prune; not due yet (BC_PRUNE_INTERVAL=${BC_PRUNE_INTERVAL}s)."
+fi
+
+# The integrity check reads the whole repository, so it also runs at most once
+# every BC_CHECK_INTERVAL seconds. Unset or 0 keeps checking on every run.
+if maintenance_due "check" "${BC_CHECK_INTERVAL:-0}"; then
+  log "Performing a repository integrity check."
+  if restic check; then
+    maintenance_mark "check"
+    log "Repository integrity check completed successfully. No errors found."
+  else
+    log "ERROR: Repository integrity check failed. Please investigate the issue."
+    output_set_error "restic repository integrity check failed at $(date '+%Y-%m-%d %H:%M:%S')"
+    exit 1
+  fi
+else
+  log "Skipping integrity check; not due yet (BC_CHECK_INTERVAL=${BC_CHECK_INTERVAL}s)."
 fi
 
 #  Send the final status to the output module
