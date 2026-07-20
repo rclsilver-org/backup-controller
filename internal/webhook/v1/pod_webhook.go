@@ -123,18 +123,7 @@ func (d *PodCustomDefaulter) Default(ctx context.Context, obj runtime.Object) er
 		Name: "backup-agent",
 	}
 
-	newContainer.Image = policy.Spec.Image.Name
-	if policy.Spec.Image.Tag != "" {
-		newContainer.Image += ":" + policy.Spec.Image.Tag
-	}
-
-	if policy.Spec.Image.PullPolicy != "" {
-		newContainer.ImagePullPolicy = policy.Spec.Image.PullPolicy
-	} else if policy.Spec.Image.Tag == "" || policy.Spec.Image.Tag == "latest" {
-		newContainer.ImagePullPolicy = corev1.PullAlways
-	} else {
-		newContainer.ImagePullPolicy = corev1.PullIfNotPresent
-	}
+	newContainer.Image, newContainer.ImagePullPolicy = resolveImage(policy.Spec.Image)
 
 	if policy.Spec.AutoDetectVolumeMounts {
 		mounts, err := d.getDetectedVolumeMounts(*pod)
@@ -203,6 +192,19 @@ func (d *PodCustomDefaulter) Default(ctx context.Context, obj runtime.Object) er
 
 	pod.Spec.Containers = append(pod.Spec.Containers, newContainer)
 
+	// Optionally inject a metrics exporter sidecar that shares the agent's
+	// environment (restic credentials + repository) and exposes Prometheus metrics.
+	if policy.Spec.Exporter != nil {
+		pod.Spec.Containers = append(pod.Spec.Containers, buildExporterContainer(policy.Spec.Exporter, newContainer.Env))
+
+		if pod.Labels == nil {
+			pod.Labels = make(map[string]string, 1)
+		}
+		pod.Labels[constants.ExporterLabel] = "true"
+
+		log.Info("spawned the restic exporter container")
+	}
+
 	if pod.Labels == nil {
 		pod.Labels = make(map[string]string, 1)
 	}
@@ -211,6 +213,53 @@ func (d *PodCustomDefaulter) Default(ctx context.Context, obj runtime.Object) er
 	log.Info("spawned the backup agent container")
 
 	return nil
+}
+
+// resolveImage returns the full image reference and pull policy for an Image
+// spec: Always for an empty/"latest" tag, IfNotPresent otherwise, unless an
+// explicit pull policy is set.
+func resolveImage(img v1alpha1.Image) (string, corev1.PullPolicy) {
+	ref := img.Name
+	if img.Tag != "" {
+		ref += ":" + img.Tag
+	}
+
+	switch {
+	case img.PullPolicy != "":
+		return ref, img.PullPolicy
+	case img.Tag == "" || img.Tag == "latest":
+		return ref, corev1.PullAlways
+	default:
+		return ref, corev1.PullIfNotPresent
+	}
+}
+
+// buildExporterContainer builds the metrics exporter sidecar. It inherits the
+// backup agent's environment (restic repository + credentials) so it can query
+// the same repository, then applies the listen port and exporter-specific env.
+func buildExporterContainer(exporter *v1alpha1.Exporter, agentEnv []corev1.EnvVar) corev1.Container {
+	port := exporter.Port
+	if port == 0 {
+		port = 8001
+	}
+
+	image, pullPolicy := resolveImage(exporter.Image)
+
+	env := append([]corev1.EnvVar{}, agentEnv...)
+	env = append(env, corev1.EnvVar{Name: "LISTEN_PORT", Value: fmt.Sprintf("%d", port)})
+	env = append(env, exporter.Environment...)
+
+	return corev1.Container{
+		Name:            "restic-exporter",
+		Image:           image,
+		ImagePullPolicy: pullPolicy,
+		Env:             env,
+		Ports: []corev1.ContainerPort{{
+			Name:          "metrics",
+			ContainerPort: port,
+			Protocol:      corev1.ProtocolTCP,
+		}},
+	}
 }
 
 func (d *PodCustomDefaulter) getPolicy(ctx context.Context, name string) (*v1alpha1.Policy, error) {

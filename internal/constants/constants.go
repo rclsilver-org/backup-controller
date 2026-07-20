@@ -21,4 +21,9 @@ const (
 
 	// MutatedLabel is the label set by the controller when a pod is mutated
 	MutatedLabel = "backup-controller.rclsilver-org.github.com/mutated"
+
+	// ExporterLabel is the label set by the controller when a metrics exporter
+	// sidecar is injected. A single PodMonitor selecting this label can then
+	// auto-discover every exporter across all namespaces.
+	ExporterLabel = "backup-controller.rclsilver-org.github.com/exporter"
 )

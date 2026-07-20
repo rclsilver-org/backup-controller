@@ -38,6 +38,25 @@ type Image struct {
 	PullPolicy corev1.PullPolicy `json:"pullPolicy,omitempty"`
 }
 
+// Exporter defines an optional metrics exporter sidecar injected alongside the
+// backup agent. It inherits the agent's environment (restic credentials) so it
+// can query the same repository and expose Prometheus metrics for scraping.
+//
+// Fields:
+//   - Image: The exporter image (e.g. "ngosang/restic-exporter"). Required when Exporter is set.
+//   - Port: The port the exporter serves /metrics on. Defaults to 8001.
+//   - Environment: Extra environment variables for the exporter (restic credentials are inherited from the agent).
+type Exporter struct {
+	// Image of the exporter.
+	Image Image `json:"image"`
+
+	// Port the exporter serves metrics on (optional, default 8001).
+	Port int32 `json:"port,omitempty"`
+
+	// Environment declares extra environment variables for the exporter (optional).
+	Environment []corev1.EnvVar `json:"environment,omitempty"`
+}
+
 // CopyEnv represents an instruction to copy an environment variable
 // from a specific container within the same pod.
 //
@@ -72,6 +91,10 @@ type CopyVolumeMount struct {
 type PolicySpec struct {
 	// Image specifies the Docker image to use.
 	Image Image `json:"image"`
+
+	// Exporter optionally injects a metrics exporter sidecar that shares the
+	// agent's credentials and exposes Prometheus metrics about the repository.
+	Exporter *Exporter `json:"exporter,omitempty"`
 
 	// Environment declares a list of environment variables to declare.
 	Environment []corev1.EnvVar `json:"environment,omitempty"`
