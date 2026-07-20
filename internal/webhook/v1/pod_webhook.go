@@ -33,6 +33,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -190,6 +191,13 @@ func (d *PodCustomDefaulter) Default(ctx context.Context, obj runtime.Object) er
 		RunAsNonRoot: &false,
 	}
 
+	// Health checks for the agent are opt-in per policy: the right check depends
+	// on the agent image (crond-based agents vs. the plain cnpg binary), so no
+	// default is applied here.
+	newContainer.LivenessProbe = policy.Spec.LivenessProbe
+	newContainer.ReadinessProbe = policy.Spec.ReadinessProbe
+	newContainer.StartupProbe = policy.Spec.StartupProbe
+
 	pod.Spec.Containers = append(pod.Spec.Containers, newContainer)
 
 	// Optionally inject a metrics exporter sidecar that shares the agent's
@@ -249,6 +257,15 @@ func buildExporterContainer(exporter *v1alpha1.Exporter, agentEnv []corev1.EnvVa
 	env = append(env, corev1.EnvVar{Name: "LISTEN_PORT", Value: fmt.Sprintf("%d", port)})
 	env = append(env, exporter.Environment...)
 
+	liveness := exporter.LivenessProbe
+	if liveness == nil {
+		liveness = metricsProbe(port, 30, 60, 5)
+	}
+	readiness := exporter.ReadinessProbe
+	if readiness == nil {
+		readiness = metricsProbe(port, 10, 30, 3)
+	}
+
 	return corev1.Container{
 		Name:            "restic-exporter",
 		Image:           image,
@@ -259,6 +276,26 @@ func buildExporterContainer(exporter *v1alpha1.Exporter, agentEnv []corev1.EnvVa
 			ContainerPort: port,
 			Protocol:      corev1.ProtocolTCP,
 		}},
+		LivenessProbe:  liveness,
+		ReadinessProbe: readiness,
+		StartupProbe:   exporter.StartupProbe,
+	}
+}
+
+// metricsProbe builds an HTTP GET probe against /metrics on the given port,
+// used as the default health check for the exporter sidecar.
+func metricsProbe(port, initialDelaySeconds, periodSeconds, failureThreshold int32) *corev1.Probe {
+	return &corev1.Probe{
+		ProbeHandler: corev1.ProbeHandler{
+			HTTPGet: &corev1.HTTPGetAction{
+				Path: "/metrics",
+				Port: intstr.FromInt32(port),
+			},
+		},
+		InitialDelaySeconds: initialDelaySeconds,
+		PeriodSeconds:       periodSeconds,
+		TimeoutSeconds:      5,
+		FailureThreshold:    failureThreshold,
 	}
 }
 

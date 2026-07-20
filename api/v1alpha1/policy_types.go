@@ -55,6 +55,17 @@ type Exporter struct {
 
 	// Environment declares extra environment variables for the exporter (optional).
 	Environment []corev1.EnvVar `json:"environment,omitempty"`
+
+	// LivenessProbe overrides the exporter liveness probe.
+	// Defaults to an HTTP GET on /metrics against the exporter port.
+	LivenessProbe *corev1.Probe `json:"livenessProbe,omitempty"`
+
+	// ReadinessProbe overrides the exporter readiness probe.
+	// Defaults to an HTTP GET on /metrics against the exporter port.
+	ReadinessProbe *corev1.Probe `json:"readinessProbe,omitempty"`
+
+	// StartupProbe optionally sets a startup probe on the exporter (default none).
+	StartupProbe *corev1.Probe `json:"startupProbe,omitempty"`
 }
 
 // CopyEnv represents an instruction to copy an environment variable
@@ -108,6 +119,18 @@ type PolicySpec struct {
 	// AutoDetectVolumeMounts enables automatic detection of the volume mounts to be copied.
 	// If set to true, the controller will attempt to identify and replicate the appropriate volume mounts.
 	AutoDetectVolumeMounts bool `json:"autoDetectVolumeMounts,omitempty"`
+
+	// LivenessProbe optionally sets a liveness probe on the injected backup agent.
+	// No default is applied: the correct check depends on the agent image (e.g.
+	// the default/postgresql agents run crond, while the cnpg agent is a plain
+	// binary), so it must be declared explicitly per policy.
+	LivenessProbe *corev1.Probe `json:"livenessProbe,omitempty"`
+
+	// ReadinessProbe optionally sets a readiness probe on the injected backup agent (default none).
+	ReadinessProbe *corev1.Probe `json:"readinessProbe,omitempty"`
+
+	// StartupProbe optionally sets a startup probe on the injected backup agent (default none).
+	StartupProbe *corev1.Probe `json:"startupProbe,omitempty"`
 }
 
 // PolicyStatus defines the observed state of Policy.
