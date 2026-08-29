@@ -1,0 +1,16 @@
+apiVersion: v2
+name: backup-controller
+description: A Helm chart to distribute backup-controller
+type: application
+
+# Placeholders — the CI rewrites both to the git tag at publish time (see the
+# publish-chart job in .github/workflows/build-controller.yaml). version == appVersion == tag.
+version: 0.0.0
+appVersion: "0.0.0"
+
+keywords:
+  - kubernetes
+  - operator
+
+annotations:
+  kubebuilder.io/generated-by: kubebuilder
