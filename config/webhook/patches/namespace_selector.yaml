@@ -10,4 +10,9 @@ webhooks:
         operator: NotIn
         values:
           - "kube-system"
+          # "system" is the kubebuilder placeholder for the operator's own
+          # namespace (never mutate the manager pod — it IS the webhook backend,
+          # else the install deadlocks). The Helm chart templates this to
+          # {{ .Release.Namespace }}; see
+          # dist/chart/templates/webhook/mutating-webhook-configuration.yaml.
           - "system"

@@ -23,7 +23,9 @@ webhooks:
       operator: NotIn
       values:
       - kube-system
-      - system
+      # Never mutate pods in the operator's own namespace: the manager pod IS the
+      # webhook backend, so gating its creation deadlocks the install (chicken/egg).
+      - {{ .Release.Namespace }}
   rules:
   - apiGroups:
     - ""
