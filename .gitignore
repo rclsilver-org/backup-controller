@@ -24,3 +24,6 @@ go.work.sum
 
 # env file
 .env
+
+# Rendered install manifest (build artifact); the Helm chart in dist/chart is the deliverable
+dist/install.yaml

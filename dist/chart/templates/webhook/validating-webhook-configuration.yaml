@@ -1,0 +1,53 @@
+{{- if .Values.webhook.enabled }}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  annotations:
+    {{- if .Values.certManager.enabled }}
+    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "backup-controller.resourceName" (dict "suffix" "serving-cert" "context" $) }}
+    {{- end }}
+  name: {{ include "backup-controller.resourceName" (dict "suffix" "validating-webhook-configuration" "context" $) }}
+webhooks:
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: {{ include "backup-controller.resourceName" (dict "suffix" "webhook-service" "context" $) }}
+      namespace: {{ .Release.Namespace }}
+      path: /validate-backup-controller-rclsilver-org-github-com-v1alpha1-policy
+  failurePolicy: Fail
+  name: vpolicy-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - backup-controller.rclsilver-org.github.com
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    - DELETE
+    resources:
+    - policies
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: {{ include "backup-controller.resourceName" (dict "suffix" "webhook-service" "context" $) }}
+      namespace: {{ .Release.Namespace }}
+      path: /validate-backup-controller-rclsilver-org-github-com-v1alpha1-schedule
+  failurePolicy: Fail
+  name: vschedule-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - backup-controller.rclsilver-org.github.com
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    - DELETE
+    resources:
+    - schedules
+  sideEffects: None
+{{- end }}
