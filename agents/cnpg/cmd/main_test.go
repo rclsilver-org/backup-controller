@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -146,5 +147,66 @@ func TestParseScheduleInterval(t *testing.T) {
 
 	if _, err := parseScheduleInterval("not a cron"); err == nil {
 		t.Fatal("expected error for invalid schedule")
+	}
+}
+
+func clusterWithPrimary(primary string) *unstructured.Unstructured {
+	return &unstructured.Unstructured{Object: map[string]any{
+		"status": map[string]any{"currentPrimary": primary},
+	}}
+}
+
+func drainReReport() {
+	select {
+	case <-reReport:
+	default:
+	}
+}
+
+func nudged() bool {
+	select {
+	case <-reReport:
+		return true
+	default:
+		return false
+	}
+}
+
+// TestSetPrimary covers the role gating: isPrimary tracks currentPrimary==myPod, and
+// reReport is nudged only when the role actually flips (so the new primary pushes
+// immediately on failover while steady state produces no churn).
+func TestSetPrimary(t *testing.T) {
+	ctx := context.Background()
+	const me = "cnpg-mealie-1"
+
+	isPrimary.Store(false)
+	drainReReport()
+
+	setPrimary(ctx, clusterWithPrimary(me), me)
+	if !isPrimary.Load() {
+		t.Fatal("expected isPrimary=true after promotion")
+	}
+	if !nudged() {
+		t.Fatal("expected a reReport nudge on promotion")
+	}
+
+	setPrimary(ctx, clusterWithPrimary(me), me)
+	if nudged() {
+		t.Fatal("did not expect a nudge when the role is unchanged")
+	}
+
+	setPrimary(ctx, clusterWithPrimary("cnpg-mealie-2"), me)
+	if isPrimary.Load() {
+		t.Fatal("expected isPrimary=false after demotion")
+	}
+	if !nudged() {
+		t.Fatal("expected a reReport nudge on demotion")
+	}
+
+	isPrimary.Store(true)
+	drainReReport()
+	setPrimary(ctx, clusterWithPrimary(""), me)
+	if isPrimary.Load() {
+		t.Fatal("expected isPrimary=false when currentPrimary is empty")
 	}
 }
