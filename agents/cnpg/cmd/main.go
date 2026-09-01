@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -59,6 +60,22 @@ var (
 		Version:  "v1",
 		Resource: "backups",
 	}
+
+	clusterGVR = schema.GroupVersionResource{
+		Group:    "postgresql.cnpg.io",
+		Version:  "v1",
+		Resource: "clusters",
+	}
+)
+
+// Only the agent on the primary instance reports to the output, so an HA
+// (multi-instance) cluster doesn't push the same passive check from every replica
+// and flap when a replica restarts. isPrimary is kept live by watchClusterPrimary
+// (follows failover); reReport nudges the backup watchers to push immediately when
+// the role flips.
+var (
+	isPrimary atomic.Bool
+	reReport  = make(chan struct{}, 1)
 )
 
 func main() {
@@ -116,8 +133,21 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Start watching scheduled backups dynamically with retry logic
+	// Seed the primary role before starting the reporters, then keep it live.
+	if err := refreshPrimary(ctx, dynamicClient, clusterName, myNamespace, myPodName); err != nil {
+		slog.WarnContext(ctx, "unable to determine initial primary role, assuming replica", "error", err)
+	}
+
 	var wg sync.WaitGroup
+
+	// Track the primary role live (follows failover) so only the primary reports.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		watchClusterPrimary(ctx, dynamicClient, clusterName, myNamespace, myPodName)
+	}()
+
+	// Start watching scheduled backups dynamically with retry logic
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -224,6 +254,116 @@ func getClusterName(ctx context.Context, clientset *kubernetes.Clientset, podNam
 	}
 
 	return ownerRef.Name, nil
+}
+
+// refreshPrimary reads the cluster's current primary once and updates isPrimary.
+func refreshPrimary(ctx context.Context, dynamicClient dynamic.Interface, clusterName, namespace, myPodName string) error {
+	cluster, err := dynamicClient.Resource(clusterGVR).Namespace(namespace).Get(ctx, clusterName, metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+	setPrimary(ctx, cluster, myPodName)
+	return nil
+}
+
+// setPrimary updates isPrimary from a Cluster object. On a role change it logs the
+// transition (promotion/demotion) at INFO and nudges the reporters, so the new
+// primary pushes immediately on failover and the old one stops.
+func setPrimary(ctx context.Context, cluster *unstructured.Unstructured, myPodName string) {
+	currentPrimary, _, _ := unstructured.NestedString(cluster.Object, "status", "currentPrimary")
+	newVal := currentPrimary != "" && currentPrimary == myPodName
+
+	old := isPrimary.Swap(newVal)
+	if old == newVal {
+		return
+	}
+
+	if newVal {
+		slog.InfoContext(ctx, "instance PROMOTED to primary — this agent will now report backup status to the output", "pod", myPodName, "currentPrimary", currentPrimary)
+	} else {
+		slog.InfoContext(ctx, "instance DEMOTED to replica — this agent stops reporting backup status (the primary takes over)", "pod", myPodName, "currentPrimary", currentPrimary)
+	}
+
+	// Nudge the backup watchers to re-report immediately (non-blocking).
+	select {
+	case reReport <- struct{}{}:
+	default:
+	}
+}
+
+// watchClusterPrimary keeps isPrimary in sync with the cluster's currentPrimary,
+// retrying the watch with exponential backoff so role changes (failover) are
+// followed in near real time rather than at the backup heartbeat cadence.
+func watchClusterPrimary(ctx context.Context, dynamicClient dynamic.Interface, clusterName, namespace, myPodName string) {
+	initialBackoff := time.Second
+	backoff := initialBackoff
+	maxBackoff := time.Minute
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		watchStart := time.Now()
+		if err := watchClusterPrimaryOnce(ctx, dynamicClient, clusterName, namespace, myPodName); err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			if time.Since(watchStart) > backoff {
+				backoff = initialBackoff
+			}
+			slog.ErrorContext(ctx, "error watching cluster primary, retrying", "error", err, "backoff", backoff)
+			timer := time.NewTimer(backoff)
+			select {
+			case <-timer.C:
+				backoff *= 2
+				if backoff > maxBackoff {
+					backoff = maxBackoff
+				}
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			}
+		} else {
+			return
+		}
+	}
+}
+
+func watchClusterPrimaryOnce(ctx context.Context, dynamicClient dynamic.Interface, clusterName, namespace, myPodName string) error {
+	// Re-read + apply current state, and get the ResourceVersion to watch from.
+	cluster, err := dynamicClient.Resource(clusterGVR).Namespace(namespace).Get(ctx, clusterName, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to get cluster %q: %w", clusterName, err)
+	}
+	setPrimary(ctx, cluster, myPodName)
+
+	watcher, err := dynamicClient.Resource(clusterGVR).Namespace(namespace).Watch(ctx, metav1.ListOptions{
+		ResourceVersion: cluster.GetResourceVersion(),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to watch clusters: %w", err)
+	}
+	defer watcher.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+
+		case event, ok := <-watcher.ResultChan():
+			if !ok {
+				return fmt.Errorf("cluster watcher channel closed")
+			}
+			cluster, ok := event.Object.(*unstructured.Unstructured)
+			if !ok || cluster.GetName() != clusterName {
+				continue
+			}
+			setPrimary(ctx, cluster, myPodName)
+		}
+	}
 }
 
 // watchScheduledBackups watches for ScheduledBackup resources and manages backup watchers dynamically
@@ -432,7 +572,11 @@ func watchBackupsForScheduledBackupOnce(ctx context.Context, dynamicClient dynam
 			return "", fmt.Errorf("failed to list backups: %w", err)
 		}
 		health := evaluateBackupHealth(list, scheduledBackupName, interval, time.Now())
-		reportHealth(ctx, scheduledBackupName, health)
+		if isPrimary.Load() {
+			reportHealth(ctx, scheduledBackupName, health)
+		} else {
+			slog.DebugContext(ctx, "not the primary instance, skipping backup health report", "scheduledBackup", scheduledBackupName)
+		}
 		return list.GetResourceVersion(), nil
 	}
 
@@ -465,6 +609,12 @@ func watchBackupsForScheduledBackupOnce(ctx context.Context, dynamicClient dynam
 		case <-heartbeatTicker.C:
 			if _, err := reconcile(); err != nil {
 				slog.ErrorContext(ctx, "heartbeat reconcile failed", "scheduledBackup", scheduledBackupName, "error", err)
+			}
+
+		case <-reReport:
+			// Primary role just flipped — re-evaluate and (if now primary) push now.
+			if _, err := reconcile(); err != nil {
+				slog.ErrorContext(ctx, "reconcile after primary change failed", "scheduledBackup", scheduledBackupName, "error", err)
 			}
 
 		case event, ok := <-watcher.ResultChan():
