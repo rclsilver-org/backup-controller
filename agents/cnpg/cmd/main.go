@@ -176,8 +176,11 @@ func main() {
 					backoff = initialBackoff
 				}
 
+				// A closed watch channel is normal (the API server rotates watches):
+				// retry silently like watchClusterPrimary rather than flapping the
+				// Icinga status to UNKNOWN. The real backup status is re-reported once
+				// the watch re-establishes and by the hourly sensor.
 				slog.ErrorContext(ctx, "error watching scheduled backups, retrying", "error", err, "backoff", backoff)
-				outputs.SetUnknown(ctx, fmt.Errorf("temporarily unable to watch backups: %w", err))
 
 				timer := time.NewTimer(backoff)
 				select {
